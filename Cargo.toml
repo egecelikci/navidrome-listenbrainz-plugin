@@ -1,0 +1,22 @@
+[package]
+name = "navidrome-listenbrainz-plugin"
+version = "0.1.0"
+edition = "2021"
+description = "Two-way loved-track sync between Navidrome and ListenBrainz"
+authors = ["egecelikci"]
+license = "GPL-3.0"
+
+[lib]
+name = "plugin"
+crate-type = ["cdylib"]
+
+[dependencies]
+nd-pdk = { git = "https://github.com/navidrome/navidrome", rev = "285dc4f39155954e6bb9af93f88da71b9b9cbe21" }
+extism-pdk = "1.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

@@ -1,0 +1,157 @@
+{
+  "name": "Navidrome ListenBrainz Sync",
+  "author": "egecelikci",
+  "version": "0.1.0",
+  "description": "Two-way loved-track sync between Navidrome stars and ListenBrainz loves",
+  "config": {
+    "schema": {
+      "type": "object",
+      "properties": {
+        "user_links": {
+          "type": "array",
+          "title": "Linked users",
+          "description": "One entry per Navidrome user. Each links a Navidrome user to their own ListenBrainz account by token.",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "properties": {
+              "navidrome_username": {
+                "type": "string",
+                "title": "Navidrome username",
+                "minLength": 1
+              },
+              "listenbrainz_token": {
+                "type": "string",
+                "title": "ListenBrainz token",
+                "description": "The user's ListenBrainz user token (kept secret). The ListenBrainz username is derived from it.",
+                "minLength": 1
+              }
+            },
+            "required": ["navidrome_username", "listenbrainz_token"]
+          }
+        },
+        "sync_inbound": {
+          "type": "boolean",
+          "title": "Star tracks loved on ListenBrainz",
+          "default": true
+        },
+        "sync_outbound": {
+          "type": "boolean",
+          "title": "Love tracks starred in Navidrome",
+          "default": true
+        },
+        "sync_schedule": {
+          "type": "string",
+          "title": "Sync cron expression",
+          "default": "*/30 * * * *"
+        },
+        "dry_run": {
+          "type": "boolean",
+          "title": "Dry run (report only, write nothing)",
+          "default": true
+        },
+        "batch_size": {
+          "type": "integer",
+          "title": "Items per matcher batch",
+          "default": 100,
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "request_delay_ms": {
+          "type": "integer",
+          "title": "Delay between ListenBrainz API calls (ms, min 1000)",
+          "default": 1000,
+          "minimum": 1000
+        },
+        "max_per_run": {
+          "type": "integer",
+          "title": "Max changes per user per pass",
+          "default": 500,
+          "minimum": 1
+        }
+      },
+      "required": ["user_links"]
+    },
+    "uiSchema": {
+      "type": "VerticalLayout",
+      "elements": [
+        {
+          "type": "Control",
+          "scope": "#/properties/user_links",
+          "options": {
+            "elementLabelProp": "navidrome_username",
+            "detail": {
+              "type": "VerticalLayout",
+              "elements": [
+                {
+                  "type": "Control",
+                  "scope": "#/properties/navidrome_username"
+                },
+                {
+                  "type": "Control",
+                  "scope": "#/properties/listenbrainz_token",
+                  "options": {
+                    "format": "password"
+                  }
+                }
+              ]
+            }
+          }
+        },
+        {
+          "type": "Control",
+          "scope": "#/properties/sync_inbound"
+        },
+        {
+          "type": "Control",
+          "scope": "#/properties/sync_outbound"
+        },
+        {
+          "type": "Control",
+          "scope": "#/properties/sync_schedule"
+        },
+        {
+          "type": "Control",
+          "scope": "#/properties/dry_run"
+        },
+        {
+          "type": "Control",
+          "scope": "#/properties/batch_size"
+        },
+        {
+          "type": "Control",
+          "scope": "#/properties/request_delay_ms"
+        },
+        {
+          "type": "Control",
+          "scope": "#/properties/max_per_run"
+        }
+      ]
+    }
+  },
+  "permissions": {
+    "http": {
+      "reason": "Call the ListenBrainz feedback and token-validation APIs",
+      "requiredHosts": ["api.listenbrainz.org"]
+    },
+    "users": {
+      "reason": "Act only for the Navidrome users assigned to this plugin"
+    },
+    "subsonicapi": {
+      "reason": "Read starred tracks and star matched tracks"
+    },
+    "matcher": {
+      "reason": "Resolve ListenBrainz recording MBIDs to local tracks"
+    },
+    "library": {
+      "reason": "Required by the matcher permission"
+    },
+    "kvstore": {
+      "reason": "Store the set of already-reconciled recordings per user",
+      "maxSize": "32MB"
+    },
+    "scheduler": {
+      "reason": "Run the periodic loved-track sync pass"
+    }
+  }
+}
