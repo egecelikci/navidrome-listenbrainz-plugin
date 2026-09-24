@@ -1,7 +1,7 @@
 {
   "name": "Navidrome ListenBrainz Sync",
   "author": "egecelikci",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Two-way loved-track sync between Navidrome stars and ListenBrainz loves",
   "config": {
     "schema": {
