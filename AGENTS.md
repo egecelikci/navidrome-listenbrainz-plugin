@@ -155,7 +155,7 @@ Phase 1 uses only these. Confirm names/signatures against the PDK source before 
   {
     "name": "Navidrome ListenBrainz Sync",
     "author": "egecelikci",
-    "version": "0.1.0",
+    "version": "1",
     "description": "Two-way loved-track sync with ListenBrainz",
     "config": { "schema": { }, "uiSchema": { } },
     "permissions": {
