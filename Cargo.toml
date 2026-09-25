@@ -2,7 +2,7 @@
 name = "navidrome-listenbrainz-plugin"
 version = "0.1.1"
 edition = "2021"
-description = "Two-way loved-track sync between Navidrome and ListenBrainz"
+description = "Two-way loved-track sync with ListenBrainz and rating sync from CritiqueBrainz"
 authors = ["egecelikci"]
 license = "GPL-3.0"
 

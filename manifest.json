@@ -2,7 +2,8 @@
   "name": "Navidrome ListenBrainz Sync",
   "author": "egecelikci",
   "version": "0.1.1",
-  "description": "Two-way loved-track sync between Navidrome stars and ListenBrainz loves",
+  "description": "Two-way loved-track sync with ListenBrainz and rating sync from CritiqueBrainz",
+  "website": "https://github.com/egecelikci/navidrome-listenbrainz-plugin",
   "config": {
     "schema": {
       "type": "object",
@@ -25,14 +26,85 @@
                 "title": "ListenBrainz token",
                 "description": "The user's ListenBrainz user token (kept secret). The ListenBrainz username is derived from it.",
                 "minLength": 1
+              },
+              "critiquebrainz_username": {
+                "type": "string",
+                "title": "CritiqueBrainz username",
+                "description": "Optional. Defaults to the ListenBrainz username, which is the same MusicBrainz account name for most users. Set this only when the two differ."
               }
             },
             "required": ["navidrome_username", "listenbrainz_token"]
           }
         },
+        "cb_sync_artists": {
+          "type": "object",
+          "title": "CritiqueBrainz artists",
+          "description": "Applies CritiqueBrainz artist ratings to Navidrome artists. Leave both options off to ignore artist ratings.",
+          "default": { "sync_rating": false, "favorite_at": 0 },
+          "properties": {
+            "sync_rating": {
+              "type": "boolean",
+              "title": "Copy the rating",
+              "description": "Set the Navidrome star rating to the CritiqueBrainz rating.",
+              "default": false
+            },
+            "favorite_at": {
+              "type": "integer",
+              "title": "Favourite at or above",
+              "description": "0 disables favouriting. At 1-5, an artist rated at least this high on CritiqueBrainz is also favourited (hearted) in Navidrome.",
+              "default": 0,
+              "minimum": 0,
+              "maximum": 5
+            }
+          }
+        },
+        "cb_sync_albums": {
+          "type": "object",
+          "title": "CritiqueBrainz albums (release groups)",
+          "description": "Applies CritiqueBrainz release group ratings to Navidrome albums. Leave both options off to ignore album ratings.",
+          "default": { "sync_rating": false, "favorite_at": 0 },
+          "properties": {
+            "sync_rating": {
+              "type": "boolean",
+              "title": "Copy the rating",
+              "description": "Set the Navidrome star rating to the CritiqueBrainz rating.",
+              "default": false
+            },
+            "favorite_at": {
+              "type": "integer",
+              "title": "Favourite at or above",
+              "description": "0 disables favouriting. At 1-5, an album rated at least this high on CritiqueBrainz is also favourited (hearted) in Navidrome.",
+              "default": 0,
+              "minimum": 0,
+              "maximum": 5
+            }
+          }
+        },
+        "cb_sync_recordings": {
+          "type": "object",
+          "title": "CritiqueBrainz tracks (recordings)",
+          "description": "Applies CritiqueBrainz recording ratings to the matching Navidrome songs. Leave both options off to ignore track ratings.",
+          "default": { "sync_rating": false, "favorite_at": 0 },
+          "properties": {
+            "sync_rating": {
+              "type": "boolean",
+              "title": "Copy the rating",
+              "description": "Set the Navidrome star rating to the CritiqueBrainz rating.",
+              "default": false
+            },
+            "favorite_at": {
+              "type": "integer",
+              "title": "Favourite at or above",
+              "description": "0 disables favouriting. At 1-5, a track rated at least this high on CritiqueBrainz is also favourited (hearted) in Navidrome.",
+              "default": 0,
+              "minimum": 0,
+              "maximum": 5
+            }
+          }
+        },
         "sync_inbound": {
           "type": "boolean",
-          "title": "Star tracks loved on ListenBrainz",
+          "title": "Heart tracks loved on ListenBrainz",
           "default": true
         },
         "sync_outbound": {
@@ -93,6 +165,10 @@
                   "options": {
                     "format": "password"
                   }
+                },
+                {
+                  "type": "Control",
+                  "scope": "#/properties/critiquebrainz_username"
                 }
               ]
             }
@@ -125,20 +201,62 @@
         {
           "type": "Control",
           "scope": "#/properties/max_per_run"
+        },
+        {
+          "type": "Group",
+          "label": "CritiqueBrainz artists → Navidrome artists",
+          "elements": [
+            {
+              "type": "Control",
+              "scope": "#/properties/cb_sync_artists/properties/sync_rating"
+            },
+            {
+              "type": "Control",
+              "scope": "#/properties/cb_sync_artists/properties/favorite_at"
+            }
+          ]
+        },
+        {
+          "type": "Group",
+          "label": "CritiqueBrainz albums (release groups) → Navidrome albums",
+          "elements": [
+            {
+              "type": "Control",
+              "scope": "#/properties/cb_sync_albums/properties/sync_rating"
+            },
+            {
+              "type": "Control",
+              "scope": "#/properties/cb_sync_albums/properties/favorite_at"
+            }
+          ]
+        },
+        {
+          "type": "Group",
+          "label": "CritiqueBrainz tracks (recordings) → Navidrome songs",
+          "elements": [
+            {
+              "type": "Control",
+              "scope": "#/properties/cb_sync_recordings/properties/sync_rating"
+            },
+            {
+              "type": "Control",
+              "scope": "#/properties/cb_sync_recordings/properties/favorite_at"
+            }
+          ]
         }
       ]
     }
   },
   "permissions": {
     "http": {
-      "reason": "Call the ListenBrainz feedback and token-validation APIs",
-      "requiredHosts": ["api.listenbrainz.org"]
+      "reason": "Read ListenBrainz feedback and tokens, and CritiqueBrainz ratings",
+      "requiredHosts": ["api.listenbrainz.org", "critiquebrainz.org"]
     },
     "users": {
       "reason": "Act only for the Navidrome users assigned to this plugin"
     },
     "subsonicapi": {
-      "reason": "Read starred tracks and star matched tracks"
+      "reason": "Read starred tracks and star or rate matched items"
     },
     "matcher": {
       "reason": "Resolve ListenBrainz recording MBIDs to local tracks"
@@ -147,11 +265,11 @@
       "reason": "Required by the matcher permission"
     },
     "kvstore": {
-      "reason": "Store the set of already-reconciled recordings per user",
+      "reason": "Store the already-reconciled recordings and CritiqueBrainz states per user",
       "maxSize": "32MB"
     },
     "scheduler": {
-      "reason": "Run the periodic loved-track sync pass"
+      "reason": "Run the periodic sync pass"
     }
   }
 }

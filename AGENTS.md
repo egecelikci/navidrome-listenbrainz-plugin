@@ -21,6 +21,8 @@ You are an expert software engineer specializing in high-reliability, single-fil
 - **Outbound:** A newly starred track in Navidrome → submit love feedback for it to ListenBrainz.
 - **Convergent and incremental:** A scheduled pass reconciles both sides toward the union of both love sets, then only does delta work on later passes.
 
+**Already shipped on top of Phase 1: one-way CritiqueBrainz rating sync** (§7, last subsection). It reads public CritiqueBrainz ratings and applies them to the matching Navidrome artist, album, or song, optionally hearting items at or above a configured rating. It is inbound-only and does not write to CritiqueBrainz. Do not remove it as out of scope — it is implemented, configured through `cb_sync_*`, and needs the `critiquebrainz.org` HTTP host and the `search3`/`setRating` Subsonic calls that §10 records.
+
 **Deferred:** historical play backfill is a future feature. Its verified design is preserved in §8 so we do not lose it — **do not implement it now**.
 
 **Explicitly out of scope for now:** live-play scrobbling to ListenBrainz, hate (`-1`) propagation, and removal propagation (un-star/un-love) — see §7. No speculative capabilities, daemons, or UI.
@@ -45,6 +47,7 @@ You are an expert software engineer specializing in high-reliability, single-fil
 
 ## 5. Idempotency & Sync State
 - **Single "settled" set:** A recording is *settled* once both sides agree (it is starred in Navidrome and loved on ListenBrainz) or once we have just propagated it. Store settled recording MBIDs in KVStore under one prefix, e.g. `synced:<recording_mbid>`.
+- **A second, differently-shaped prefix for CritiqueBrainz:** `cbsynced:<nd_username>:<entity>:<mbid>[:r<rating>][:f<0|1>]`. These keys encode the *state that was applied* rather than "both sides agree", because a CritiqueBrainz rating is not binary: a changed rating must produce a different key so it is re-applied. Only the actions the rule enables are encoded, so a favourite-only rule is not re-run when a rating it ignores changes. Keep the two prefixes separate — the ListenBrainz set is matched on a bare recording MBID, so mixing shapes into one prefix would corrupt that lookup.
 - **Per pass:** Load the set once with `nd_pdk::host::kvstore::list("synced:")` into an in-memory set; add entries with `kvstore::set` only after a side effect has actually succeeded.
 - **Why one set, not two:** A single set prevents ping-pong. When inbound stars a track, it is already loved on LB, so recording it as settled stops outbound from re-loving it; when outbound loves a track, it was already starred locally, so settled stops inbound from re-starring it.
 - **Never settle an unmatched recording:** If a loved MBID has no local track yet, do not store it — a later library scan should still be able to pick it up.
@@ -68,6 +71,17 @@ Run one reconciliation pass inside the Scheduler callback (§10), once per confi
    - For each starred song with a non-empty `musicBrainzId` not already settled: submit love via `nd_pdk::host::http::send` → `POST https://api.listenbrainz.org/1/feedback/recording-feedback`, header `Authorization: Token <token>`, body `{"recording_mbid": "...", "score": 1}`. **One feedback per request** (API constraint). Mark settled after a 2xx.
 3. **Politeness (mandatory):** send the `User-Agent` header on every ListenBrainz request; keep at least `request_delay_ms` (floored at 1000 ms) between all API calls in a pass; cap work per user per pass with `max_per_run`; read `X-RateLimit-Remaining` and stop the pass once it hits 0; on HTTP 429 or 5xx stop the pass (do not retry in a tight loop) and let the next scheduled pass continue. Never `Retry-After`-spin.
 4. **Removals and hates are not propagated.** Un-starring locally or un-loving on LB is intentionally left untouched — we must not clobber a change the plugin did not make. If this is ever added, it must be snapshot-guarded to only revert what the plugin itself set, and it must be an explicit, opt-in feature.
+
+### CritiqueBrainz rating sync (implemented — one-way, read-only)
+
+Runs inside the same scheduled pass, once per enabled `cb_sync_*` rule. Nothing is ever written to CritiqueBrainz, so there is no OAuth flow and no token: the ratings sit on public reviews. The CritiqueBrainz username is inherited from the ListenBrainz link and may be overridden with `critiquebrainz_username`.
+
+0. **Resolve, then page.** `GET {CB_ROOT}/user/<username>` → `user.id`, once per pass; log which account was bound, because inheriting the username can bind a different account than the administrator expects. Then `GET {CB_ROOT}/review/?user_id=<id>&entity_type=<type>&review_type=rating&limit=50&offset=<n>`, reading `count` (the total for that entity type, **not** the page size). Three API facts are load-bearing and were verified live: `limit` is capped at 50 (51 → 400); `entity_type=musicbrainz` is **rejected** with 400, so `artist` / `release_group` / `recording` are paged separately; and `?username=` is silently ignored, so only `user_id` filters.
+1. **Mapping and resolution.** `artist` → Navidrome artist, `release_group` → Navidrome album, `recording` → Navidrome song. Resolve each `entity_id` with one `subsonicapi::call("search3?query=<mbid>&artistCount=N&albumCount=N&songCount=N")`: a UUID query is matched against Navidrome's MBID columns directly (it bypasses full-text search), so no library scan is needed. **One entity can span several local items** — a release group may hold duplicate albums, a recording may sit on many compilations — and every match receives the same state (fan-out).
+2. **Two independent actions per rule.** `sync_rating` copies the rating (`setRating?id=…&rating=N`, one id per call); `favorite_at` ≥ 1 additionally hearts items rated at least that high (`star?artistId=…` / `albumId=…` / `id=…`, several ids per call). Both off ⇒ that entity type is ignored entirely, which is how rating-only, favourite-only, both, and neither are all expressed. Never un-star and never clear a rating.
+3. **Never cross-check an album's `musicBrainzId`.** Navidrome reports the *release* MBID in that field while CritiqueBrainz rates *release groups*, so the two differ by design; the `search3` MBID match is authoritative for albums. Artists and songs do echo back the queried MBID and may be compared.
+4. **Budget counts changes attempted, not rows.** Skipping an already-settled rating is free, and so is a rating with no local match, so the walk always reaches the end of the list. Do **not** "fix" the cost by charging settled rows to the budget: that pins every pass to the same first page and permanently starves the tail. The list is paged in full every pass (one request per 50 ratings per enabled type), which §12's README documents as a real cost.
+5. **State.** `cbsynced:` keys, per §5. A rating with no local match is never settled so a later scan can still pick it up; a release group that *has* been settled is not re-examined, so a duplicate album appearing in a later scan is not hearted until the rating changes. Documented, not fixed — re-checking would cost a `search3` per rating per pass.
 
 ## 8. Historical Backfill (Deferred — do not implement yet)
 Preserved verified design so it is not lost.
@@ -97,8 +111,37 @@ Configuration is JSON Schema (draft-07) + optional JSONForms `uiSchema` in the m
             "properties": {
               "navidrome_username": { "type": "string", "title": "Navidrome username", "minLength": 1 },
               "listenbrainz_token": { "type": "string", "title": "ListenBrainz token", "minLength": 1 }
+              "critiquebrainz_username": {
+                "type": "string",
+                "title": "CritiqueBrainz username",
+                "description": "Optional. Defaults to the ListenBrainz username."
+              }
             },
             "required": ["navidrome_username", "listenbrainz_token"]
+          }
+        },
+        "cb_sync_artists": {
+          "type": "object",
+          "default": { "sync_rating": false, "favorite_at": 0 },
+          "properties": {
+            "sync_rating": { "type": "boolean", "default": false },
+            "favorite_at": { "type": "integer", "default": 0, "minimum": 0, "maximum": 5 }
+          }
+        },
+        "cb_sync_albums": {
+          "type": "object",
+          "default": { "sync_rating": false, "favorite_at": 0 },
+          "properties": {
+            "sync_rating": { "type": "boolean", "default": false },
+            "favorite_at": { "type": "integer", "default": 0, "minimum": 0, "maximum": 5 }
+          }
+        },
+        "cb_sync_recordings": {
+          "type": "object",
+          "default": { "sync_rating": false, "favorite_at": 0 },
+          "properties": {
+            "sync_rating": { "type": "boolean", "default": false },
+            "favorite_at": { "type": "integer", "default": 0, "minimum": 0, "maximum": 5 }
           }
         },
         "sync_inbound": { "type": "boolean", "title": "Star tracks loved on ListenBrainz", "default": true },
@@ -149,8 +192,8 @@ Configuration is JSON Schema (draft-07) + optional JSONForms `uiSchema` in the m
 ## 10. Platform Contract (capabilities, host services, permissions)
 Phase 1 uses only these. Confirm names/signatures against the PDK source before calling.
 - **Capabilities:** Lifecycle (`nd_on_init`; Rust `nd_pdk::lifecycle::InitProvider` + `register_lifecycle_init!`) registers the recurring sync and schedules a one-shot reconciliation ~5 s after load (so a fresh install or update does not wait for the next cron tick); Scheduler callback (`nd_scheduler_callback`; Rust `nd_pdk::scheduler::CallbackProvider`) runs the pass. No Scrobbler, no TaskWorker.
-- **Host services (Rust paths):** `host::http::send` (the only network path; Extism's built-in HTTP is disabled), `host::subsonicapi::call` (star / getStarred2), `host::matcher::match_songs`, `host::kvstore::{list, set, has, get_many}`, `host::scheduler::schedule_recurring`, `host::config::{get, get_int, keys}`, `host::users::{get_users, get_admins}`.
-- **Manifest permissions (exact keys):** `http` (`requiredHosts: ["api.listenbrainz.org"]`), `users`, `subsonicapi` (requires `users`), `matcher` (requires `library`), `library`, `kvstore` (`maxSize`), `scheduler`. Each needs a `reason`. Skeleton:
+- **Host services (Rust paths):** `host::http::send` (the only network path; Extism's built-in HTTP is disabled) — ListenBrainz feedback and token endpoints, plus the public CritiqueBrainz user and review endpoints; `host::subsonicapi::call` (star / getStarred2 / search3 / setRating); `host::matcher::match_songs`; `host::kvstore::{list, set, has, get_many}`; `host::scheduler::schedule_recurring`; `host::config::{get, get_int, keys}`; `host::users::{get_users, get_admins}`.
+- **Manifest permissions (exact keys):** `http` (`requiredHosts: ["api.listenbrainz.org", "critiquebrainz.org"]`), `users`, `subsonicapi` (requires `users`), `matcher` (requires `library`), `library`, `kvstore` (`maxSize`), `scheduler`. Each needs a `reason`. Skeleton:
   ```json
   {
     "name": "Navidrome ListenBrainz Sync",
@@ -159,9 +202,9 @@ Phase 1 uses only these. Confirm names/signatures against the PDK source before 
     "description": "Two-way loved-track sync with ListenBrainz",
     "config": { "schema": { }, "uiSchema": { } },
     "permissions": {
-      "http": { "reason": "Call the ListenBrainz API", "requiredHosts": ["api.listenbrainz.org"] },
+      "http": { "reason": "Call the ListenBrainz API", "requiredHosts": ["api.listenbrainz.org", "critiquebrainz.org"] },
       "users": { "reason": "Act for the users assigned to this plugin" },
-      "subsonicapi": { "reason": "Read starred tracks and star matched tracks" },
+      "subsonicapi": { "reason": "Read starred tracks, search for MBID matches, and star or rate matched items" },
       "matcher": { "reason": "Resolve recording MBIDs to local tracks" },
       "library": { "reason": "Required by the matcher permission" },
       "kvstore": { "reason": "Store settled sync state", "maxSize": "32MB" },
