@@ -5,12 +5,12 @@
 
 Two-way sync between Navidrome Favorites (the heart) and ListenBrainz Loves, plus a one-way Rating sync from CritiqueBrainz into Navidrome.
 
-ListenBrainz:
+## ListenBrainz
 
 - ListenBrainz Love → mark the matching track as a Favorite in Navidrome
 - Navidrome Favorite → Love the recording on ListenBrainz
 
-CritiqueBrainz (ratings are read, never written):
+## CritiqueBrainz
 
 - CritiqueBrainz artist / release group / recording rating → Navidrome artist / album / song rating
 - optionally, a rating at or above a threshold → also mark that item as a Favorite in Navidrome
