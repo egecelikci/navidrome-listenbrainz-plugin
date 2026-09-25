@@ -1,13 +1,14 @@
 //! Navidrome ListenBrainz loved-track sync and CritiqueBrainz rating sync.
 //!
 //! ListenBrainz, for each Navidrome user linked by token:
-//! - inbound: a recording loved on ListenBrainz is starred on the matching local track;
-//! - outbound: a locally starred recording is loved on ListenBrainz.
+//! - inbound: a recording loved on ListenBrainz is marked as a Favorite on the matching local
+//!   track;
+//! - outbound: a locally favorited recording is loved on ListenBrainz.
 //!
 //! CritiqueBrainz, one-way (ratings are read, never written), per entity type:
 //! - the rating of a loved/rated artist, release group, or recording is copied onto the
 //!   matching Navidrome artist, album, or song;
-//! - a rating at or above a configured threshold also favourites (hearts) that item.
+//! - a rating at or above a configured threshold also marks that item as a Favorite.
 //!
 //! Every pass is convergent and incremental: what a pass has already applied is recorded in
 //! KVStore, so a repeat pass redoes only what is still outstanding. An applied state is skipped
@@ -155,8 +156,9 @@ impl CbEntity {
         }
     }
 
-    /// The Subsonic `star` parameter carrying this entity's id. Only songs are named `id`.
-    fn star_param(self) -> &'static str {
+    /// The Subsonic `star` parameter carrying this entity's id; favoriting *is* the `star`
+    /// endpoint. Only songs are named `id`.
+    fn favorite_param(self) -> &'static str {
         match self {
             CbEntity::Artist => "artistId",
             CbEntity::ReleaseGroup => "albumId",
@@ -177,8 +179,8 @@ impl CbEntity {
     }
 }
 
-/// What to apply to one CritiqueBrainz entity type. `favorite_at == 0` disables favouriting,
-/// so the two toggles independently cover rating-only, favourite-only, both, or neither.
+/// What to apply to one CritiqueBrainz entity type. `favorite_at == 0` disables favoriting,
+/// so the two toggles independently cover rating-only, favorite-only, both, or neither.
 #[derive(Clone, Copy, Deserialize)]
 struct CbRule {
     #[serde(default)]
@@ -218,7 +220,7 @@ fn read_cb_rules() -> Vec<(CbEntity, CbRule)> {
             }
         };
         if !(0..=5).contains(&rule.favorite_at) {
-            warn!("CritiqueBrainz sync: {key} favorite_at must be 0-5, favouriting stays off");
+            warn!("CritiqueBrainz sync: {key} favorite_at must be 0-5, favoriting stays off");
             rule.favorite_at = 0;
         }
         if !rule.is_disabled() {
@@ -363,7 +365,7 @@ fn run_sync() {
     info!("Sync complete");
 }
 
-/// Reconciles one user's loves and stars.
+/// Reconciles one user's Loves and Favorites.
 fn sync_user(settings: &Settings, link: &UserLink, lb_username: &str) {
     let mut settled = load_settled(&link.nd_username);
     let mut budget = settings.max_per_run;
@@ -423,7 +425,7 @@ fn mark_settled(settings: &Settings, settled: &mut HashSet<String>, nd_username:
     }
 }
 
-/// Stars every ListenBrainz love that is not already settled. Returns how many were applied.
+/// Marks as Favorites every ListenBrainz Love that is not already settled.
 fn sync_inbound(
     settings: &Settings,
     link: &UserLink,
@@ -467,7 +469,7 @@ fn sync_inbound(
             candidates.truncate(room);
         }
         if !candidates.is_empty() {
-            applied += resolve_and_star(settings, link, settled, &candidates);
+            applied += resolve_and_favorite(settings, link, settled, &candidates);
         }
 
         if exhausted {
@@ -510,15 +512,16 @@ fn inbound_candidates(page: &FeedbackPage, settled: &HashSet<String>) -> Vec<Str
     candidates
 }
 
-/// Resolves MBIDs to local tracks and stars the unstarred ones in a single batched call.
-fn resolve_and_star(
+/// Resolves MBIDs to local tracks and marks the unfavorited ones as Favorites in one batched
+/// call.
+fn resolve_and_favorite(
     settings: &Settings,
     link: &UserLink,
     settled: &mut HashSet<String>,
     candidates: &[String],
 ) -> i64 {
-    let mut to_star = Vec::new();
-    let mut to_star_mbids = Vec::new();
+    let mut to_favorite = Vec::new();
+    let mut to_favorite_mbids = Vec::new();
 
     for chunk in candidates.chunks(settings.batch_size) {
         let songs: Vec<SongRef> = chunk
@@ -544,10 +547,13 @@ fn resolve_and_star(
                     if track.starred {
                         mark_settled(settings, settled, &link.nd_username, mbid);
                     } else if settings.dry_run {
-                        info!("ListenBrainz sync [dry-run]: would star '{}'", track.title);
+                        info!(
+                            "ListenBrainz sync [dry-run]: would favorite '{}'",
+                            track.title
+                        );
                     } else {
-                        to_star.push(track.id);
-                        to_star_mbids.push(mbid.clone());
+                        to_favorite.push(track.id);
+                        to_favorite_mbids.push(mbid.clone());
                     }
                 }
                 _ => debug!("ListenBrainz sync: no local match for {mbid}"),
@@ -555,17 +561,17 @@ fn resolve_and_star(
         }
     }
 
-    if to_star.is_empty() || !star_tracks(link, &to_star) {
+    if to_favorite.is_empty() || !favorite_tracks(link, &to_favorite) {
         return 0;
     }
-    for mbid in &to_star_mbids {
+    for mbid in &to_favorite_mbids {
         mark_settled(settings, settled, &link.nd_username, mbid);
     }
-    to_star_mbids.len() as i64
+    to_favorite_mbids.len() as i64
 }
 
-/// Sends one batched Subsonic `star` call. Returns whether the API reported success.
-fn star_tracks(link: &UserLink, media_ids: &[String]) -> bool {
+/// Marks tracks as Favorites in one batched Subsonic `star` call.
+fn favorite_tracks(link: &UserLink, media_ids: &[String]) -> bool {
     let mut query = String::from("star?");
     for id in media_ids {
         query.push_str("id=");
@@ -578,17 +584,17 @@ fn star_tracks(link: &UserLink, media_ids: &[String]) -> bool {
     match subsonicapi::call(&query) {
         Ok(body) if subsonic_ok(&body) => true,
         Ok(body) => {
-            warn!("ListenBrainz sync: star call failed: {body}");
+            warn!("ListenBrainz sync: favorite call failed: {body}");
             false
         }
         Err(e) => {
-            warn!("ListenBrainz sync: star call error: {e}");
+            warn!("ListenBrainz sync: favorite call error: {e}");
             false
         }
     }
 }
 
-/// Loves every locally starred recording that is not already settled.
+/// Loves every locally favorited recording that is not already settled.
 fn sync_outbound(
     settings: &Settings,
     link: &UserLink,
@@ -905,8 +911,8 @@ fn apply_cb_state(
     } else {
         Vec::new()
     };
-    let star_targets = if rule.favorite_at > 0 && rating >= rule.favorite_at {
-        pending_star(&items)
+    let favorite_targets = if rule.favorite_at > 0 && rating >= rule.favorite_at {
+        pending_favorite(&items)
     } else {
         Vec::new()
     };
@@ -919,11 +925,11 @@ fn apply_cb_state(
                 rating_targets.len()
             );
         }
-        if !star_targets.is_empty() {
+        if !favorite_targets.is_empty() {
             info!(
-                "CritiqueBrainz sync [dry-run]: would favourite {} '{mbid}' ({} item(s))",
+                "CritiqueBrainz sync [dry-run]: would favorite {} '{mbid}' ({} item(s))",
                 entity.cb_name(),
-                star_targets.len()
+                favorite_targets.len()
             );
         }
         mark_cb_settled(settings, settled, &link.nd_username, &state);
@@ -939,18 +945,18 @@ fn apply_cb_state(
             return Some(attempted);
         }
     }
-    for item in &star_targets {
+    for item in &favorite_targets {
         attempted += 1;
-        if !star_item(link, entity, &item.id) {
+        if !favorite_item(link, entity, &item.id) {
             return Some(attempted);
         }
     }
     if attempted > 0 {
         info!(
-            "CritiqueBrainz sync: {} '{mbid}' -> {state} (rating on {}, favourite on {} item(s))",
+            "CritiqueBrainz sync: {} '{mbid}' -> {state} (rating on {}, favorite on {} item(s))",
             entity.cb_name(),
             rating_targets.len(),
-            star_targets.len()
+            favorite_targets.len()
         );
     }
     mark_cb_settled(settings, settled, &link.nd_username, &state);
@@ -965,9 +971,12 @@ fn pending_rating(items: &[SearchItem], rating: i64) -> Vec<&SearchItem> {
         .collect()
 }
 
-/// The local items that are not favourited yet.
-fn pending_star(items: &[SearchItem]) -> Vec<&SearchItem> {
-    items.iter().filter(|item| item.starred.is_none()).collect()
+/// The local items that are not marked as a Favorite yet.
+fn pending_favorite(items: &[SearchItem]) -> Vec<&SearchItem> {
+    items
+        .iter()
+        .filter(|item| item.favorited.is_none())
+        .collect()
 }
 
 /// Finds every local Navidrome item matching one CritiqueBrainz entity id.
@@ -1036,11 +1045,11 @@ fn set_rating(link: &UserLink, id: &str, rating: i64) -> bool {
     subsonic_call_ok(&uri, "setRating")
 }
 
-/// Favourites (hearts) one Navidrome item through Subsonic.
-fn star_item(link: &UserLink, entity: CbEntity, id: &str) -> bool {
+/// Marks one Navidrome item as a Favorite, through Subsonic's `star` endpoint.
+fn favorite_item(link: &UserLink, entity: CbEntity, id: &str) -> bool {
     let uri = format!(
         "star?{}={}&u={}",
-        entity.star_param(),
+        entity.favorite_param(),
         percent_encode(id),
         percent_encode(&link.nd_username)
     );
@@ -1102,7 +1111,7 @@ fn mark_cb_settled(
 }
 
 /// The applied state of one entity under one rule. It lists only the actions the rule asks
-/// for, so a changed rating re-applies just that action, and a rule that only favourites is
+/// for, so a changed rating re-applies just that action, and a rule that only favorites is
 /// never re-applied because of a rating change it does not care about.
 fn cb_state_key(entity: CbEntity, mbid: &str, rating: i64, rule: CbRule) -> String {
     let mut key = format!("{}:{mbid}:", entity.cb_name());
@@ -1327,16 +1336,17 @@ struct SearchResult3 {
     song: Vec<SearchItem>,
 }
 
-/// One local item found by `search3`. `starred` is absent unless the user favourited it, and
-/// `userRating` is absent unless it is non-zero.
+/// One local item found by `search3`. `favorited` mirrors Subsonic's `starred` field: it is
+/// absent unless the user marked the item as a Favorite, and `userRating` is absent unless it
+/// is non-zero.
 #[derive(Debug, Deserialize)]
 struct SearchItem {
     #[serde(default)]
     id: String,
     #[serde(rename = "musicBrainzId", default)]
     mbid: String,
-    #[serde(default)]
-    starred: Option<String>,
+    #[serde(rename = "starred", default)]
+    favorited: Option<String>,
     #[serde(rename = "userRating", default)]
     user_rating: Option<i64>,
 }
@@ -1399,7 +1409,8 @@ struct Starred2 {
     song: Vec<StarredSong>,
 }
 
-/// A starred song. `musicBrainzId` carries the recording MBID.
+/// A song from Subsonic's `starred2` list, i.e. one the user marked as a Favorite.
+/// `musicBrainzId` carries the recording MBID.
 #[derive(Debug, Deserialize)]
 struct StarredSong {
     #[serde(rename = "musicBrainzId", default)]
@@ -1416,7 +1427,7 @@ mod tests {
             sync_rating: true,
             favorite_at: 0,
         };
-        let star_only = CbRule {
+        let favorite_only = CbRule {
             sync_rating: false,
             favorite_at: 4,
         };
@@ -1432,18 +1443,18 @@ mod tests {
         );
         // The two toggles are encoded independently.
         assert_eq!(
-            cb_state_key(CbEntity::Artist, "m", 3, star_only),
+            cb_state_key(CbEntity::Artist, "m", 3, favorite_only),
             "artist:m:f0"
         );
         assert_eq!(
-            cb_state_key(CbEntity::Artist, "m", 4, star_only),
+            cb_state_key(CbEntity::Artist, "m", 4, favorite_only),
             "artist:m:f1"
         );
         assert_eq!(
             cb_state_key(CbEntity::Recording, "m", 4, rating_only),
             "recording:m:r4:"
         );
-        // Crossing the threshold re-applies the favourite without a rating change.
+        // Crossing the threshold re-applies the Favorite without a rating change.
         assert_ne!(
             cb_state_key(CbEntity::Recording, "m", 3, both),
             cb_state_key(CbEntity::Recording, "m", 4, both)
@@ -1457,37 +1468,40 @@ mod tests {
 
     #[test]
     fn only_the_items_missing_the_state_are_touched() {
-        let item = |id: &str, starred: Option<&str>, user_rating: Option<i64>| SearchItem {
+        let item = |id: &str, favorited: Option<&str>, user_rating: Option<i64>| SearchItem {
             id: id.to_string(),
             mbid: String::new(),
-            starred: starred.map(str::to_string),
+            favorited: favorited.map(str::to_string),
             user_rating,
         };
         let items = vec![
-            item("unrated-unstarred", None, None),
+            item("unrated-unfavorited", None, None),
             item(
-                "already-5-and-starred",
+                "already-5-and-favorited",
                 Some("2024-05-05T00:00:00Z"),
                 Some(5),
             ),
-            item("rated-4-unstarred", None, Some(4)),
-            item("rated-5-unstarred", None, Some(5)),
+            item("rated-4-unfavorited", None, Some(4)),
+            item("rated-5-unfavorited", None, Some(5)),
         ];
 
         let rated: Vec<&str> = pending_rating(&items, 5)
             .iter()
             .map(|i| i.id.as_str())
             .collect();
-        assert_eq!(rated, vec!["unrated-unstarred", "rated-4-unstarred"]);
+        assert_eq!(rated, vec!["unrated-unfavorited", "rated-4-unfavorited"]);
 
-        // Favouriting is independent of the rating, so only the already-starred item is skipped.
-        let starred: Vec<&str> = pending_star(&items).iter().map(|i| i.id.as_str()).collect();
+        // Favoriting is independent of the rating, so only the already-Favorited item is skipped.
+        let favorited: Vec<&str> = pending_favorite(&items)
+            .iter()
+            .map(|i| i.id.as_str())
+            .collect();
         assert_eq!(
-            starred,
+            favorited,
             vec![
-                "unrated-unstarred",
-                "rated-4-unstarred",
-                "rated-5-unstarred"
+                "unrated-unfavorited",
+                "rated-4-unfavorited",
+                "rated-5-unfavorited"
             ]
         );
     }
@@ -1517,10 +1531,10 @@ mod tests {
     }
 
     #[test]
-    fn star_param_matches_the_subsonic_endpoint() {
-        assert_eq!(CbEntity::Recording.star_param(), "id");
-        assert_eq!(CbEntity::ReleaseGroup.star_param(), "albumId");
-        assert_eq!(CbEntity::Artist.star_param(), "artistId");
+    fn favorite_param_matches_the_subsonic_endpoint() {
+        assert_eq!(CbEntity::Recording.favorite_param(), "id");
+        assert_eq!(CbEntity::ReleaseGroup.favorite_param(), "albumId");
+        assert_eq!(CbEntity::Artist.favorite_param(), "artistId");
         assert_eq!(CbEntity::ReleaseGroup.cb_name(), "release_group");
         // Navidrome reports an album's release MBID, never the release group we query by, so
         // an album id must stay out of the cross-check or every album match is discarded.
@@ -1590,11 +1604,11 @@ mod tests {
             .expect("searchResult3 present");
         assert_eq!(result.artist.first().and_then(|a| a.user_rating), Some(4));
         assert_eq!(
-            result.artist.first().map(|a| a.starred.is_none()),
+            result.artist.first().map(|a| a.favorited.is_none()),
             Some(true)
         );
         assert_eq!(
-            result.album.first().and_then(|a| a.starred.as_deref()),
+            result.album.first().and_then(|a| a.favorited.as_deref()),
             Some("2024-05-05T00:00:00Z")
         );
         assert!(result.song.is_empty());

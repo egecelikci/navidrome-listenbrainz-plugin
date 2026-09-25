@@ -45,13 +45,13 @@
             "sync_rating": {
               "type": "boolean",
               "title": "Copy the rating",
-              "description": "Set the Navidrome star rating to the CritiqueBrainz rating.",
+              "description": "Set the Navidrome rating to the CritiqueBrainz rating.",
               "default": false
             },
             "favorite_at": {
               "type": "integer",
-              "title": "Favourite at or above",
-              "description": "0 disables favouriting. At 1-5, an artist rated at least this high on CritiqueBrainz is also favourited (hearted) in Navidrome.",
+              "title": "Favorite at or above",
+              "description": "0 disables favoriting. At 1-5, an artist rated at least this high on CritiqueBrainz is also marked as a Favorite in Navidrome.",
               "default": 0,
               "minimum": 0,
               "maximum": 5
@@ -67,13 +67,13 @@
             "sync_rating": {
               "type": "boolean",
               "title": "Copy the rating",
-              "description": "Set the Navidrome star rating to the CritiqueBrainz rating.",
+              "description": "Set the Navidrome rating to the CritiqueBrainz rating.",
               "default": false
             },
             "favorite_at": {
               "type": "integer",
-              "title": "Favourite at or above",
-              "description": "0 disables favouriting. At 1-5, an album rated at least this high on CritiqueBrainz is also favourited (hearted) in Navidrome.",
+              "title": "Favorite at or above",
+              "description": "0 disables favoriting. At 1-5, an album rated at least this high on CritiqueBrainz is also marked as a Favorite in Navidrome.",
               "default": 0,
               "minimum": 0,
               "maximum": 5
@@ -89,13 +89,13 @@
             "sync_rating": {
               "type": "boolean",
               "title": "Copy the rating",
-              "description": "Set the Navidrome star rating to the CritiqueBrainz rating.",
+              "description": "Set the Navidrome rating to the CritiqueBrainz rating.",
               "default": false
             },
             "favorite_at": {
               "type": "integer",
-              "title": "Favourite at or above",
-              "description": "0 disables favouriting. At 1-5, a track rated at least this high on CritiqueBrainz is also favourited (hearted) in Navidrome.",
+              "title": "Favorite at or above",
+              "description": "0 disables favoriting. At 1-5, a track rated at least this high on CritiqueBrainz is also marked as a Favorite in Navidrome.",
               "default": 0,
               "minimum": 0,
               "maximum": 5
@@ -104,12 +104,12 @@
         },
         "sync_inbound": {
           "type": "boolean",
-          "title": "Heart tracks loved on ListenBrainz",
+          "title": "Favorite tracks loved on ListenBrainz",
           "default": true
         },
         "sync_outbound": {
           "type": "boolean",
-          "title": "Love tracks starred in Navidrome",
+          "title": "Love tracks favorited in Navidrome",
           "default": true
         },
         "sync_schedule": {
@@ -256,7 +256,7 @@
       "reason": "Act only for the Navidrome users assigned to this plugin"
     },
     "subsonicapi": {
-      "reason": "Read starred tracks and star or rate matched items"
+      "reason": "Read favorited tracks, search for MBID matches, and favorite or rate matched items"
     },
     "matcher": {
       "reason": "Resolve ListenBrainz recording MBIDs to local tracks"
