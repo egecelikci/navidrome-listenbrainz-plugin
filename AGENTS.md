@@ -245,6 +245,11 @@ navidrome plugin validate navidrome-listenbrainz-plugin.ndp
 - The plugin ID is the `.ndp` filename (minus extension); it determines the storage/KV paths, so keep the filename stable.
 - Verify the parser against real ListenBrainz feedback JSON before touching live data; run with `dry_run = true` first.
 
-## 13. Documentation Layout
+## 13. Commit Messages
+- **Conventional Commits, lowercase:** every commit is `<type>[optional scope]: <description>` — e.g. `feat(critiquebrainz): one-way rating sync`. Types are lowercase (`feat`, `fix`, `docs`, `chore`, `refactor`, `test`, `perf`, `build`, `ci`); a scope is an optional lowercase noun in parentheses; the description is lowercase, imperative, and has no trailing period.
+- **Description only — no body, no footers:** the description is the entire message. Never write a body, a bullet list, `BREAKING CHANGE:`, or any other trailer. If a change needs explaining, it belongs in a code comment, a doc, or this file — not in the commit.
+- **Why:** one grep-friendly line per commit keeps history readable and `git log --oneline` complete; the rationale for a design decision must be findable in the source, not only in `git show`.
+
+## 14. Documentation Layout
 - **Rustdoc over JSDoc:** Document all functions and struct declarations with `///` or file-level `//!`.
 - **No verbose type comments:** Do not restate types in comments (e.g. avoid `@param {string} mbid`). Let the static types declare themselves; comments describe intent and logic paths.
