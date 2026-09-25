@@ -41,7 +41,7 @@ Then:
     cargo build --release --target wasm32-wasip1
     zip -j navidrome-listenbrainz-plugin.ndp manifest.json target/wasm32-wasip1/release/plugin.wasm
 
-The `nd-pdk` dependency is fetched from the Navidrome repository, pinned to the commit for the v0.64.1 release ([285dc4f](https://github.com/navidrome/navidrome/commit/285dc4f39155954e6bb9af93f88da71b9b9cbe21)).
+The `nd-pdk` dependency is fetched from the Navidrome repository, pinned to the commit for the v0.64.2 release ([1011457](https://github.com/navidrome/navidrome/commit/101145742f4762164202cb4858c9126258bdc463)).
 
 ## Notes
 

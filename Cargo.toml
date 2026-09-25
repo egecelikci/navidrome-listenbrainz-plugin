@@ -11,7 +11,7 @@ name = "plugin"
 crate-type = ["cdylib"]
 
 [dependencies]
-nd-pdk = { git = "https://github.com/navidrome/navidrome", rev = "285dc4f39155954e6bb9af93f88da71b9b9cbe21" }
+nd-pdk = { git = "https://github.com/navidrome/navidrome", rev = "101145742f4762164202cb4858c9126258bdc463" }
 extism-pdk = "1.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

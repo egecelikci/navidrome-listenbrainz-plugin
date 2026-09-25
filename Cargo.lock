@@ -183,7 +183,7 @@ dependencies = [
 [[package]]
 name = "nd-pdk"
 version = "0.1.0"
-source = "git+https://github.com/navidrome/navidrome?rev=285dc4f39155954e6bb9af93f88da71b9b9cbe21#285dc4f39155954e6bb9af93f88da71b9b9cbe21"
+source = "git+https://github.com/navidrome/navidrome?rev=101145742f4762164202cb4858c9126258bdc463#101145742f4762164202cb4858c9126258bdc463"
 dependencies = [
  "extism-pdk",
  "nd-pdk-capabilities",
@@ -196,7 +196,7 @@ dependencies = [
 [[package]]
 name = "nd-pdk-capabilities"
 version = "0.1.0"
-source = "git+https://github.com/navidrome/navidrome?rev=285dc4f39155954e6bb9af93f88da71b9b9cbe21#285dc4f39155954e6bb9af93f88da71b9b9cbe21"
+source = "git+https://github.com/navidrome/navidrome?rev=101145742f4762164202cb4858c9126258bdc463#101145742f4762164202cb4858c9126258bdc463"
 dependencies = [
  "base64",
  "extism-pdk",
@@ -208,7 +208,7 @@ dependencies = [
 [[package]]
 name = "nd-pdk-host"
 version = "0.1.0"
-source = "git+https://github.com/navidrome/navidrome?rev=285dc4f39155954e6bb9af93f88da71b9b9cbe21#285dc4f39155954e6bb9af93f88da71b9b9cbe21"
+source = "git+https://github.com/navidrome/navidrome?rev=101145742f4762164202cb4858c9126258bdc463#101145742f4762164202cb4858c9126258bdc463"
 dependencies = [
  "base64",
  "extism-pdk",
@@ -220,7 +220,7 @@ dependencies = [
 [[package]]
 name = "nd-pdk-types"
 version = "0.1.0"
-source = "git+https://github.com/navidrome/navidrome?rev=285dc4f39155954e6bb9af93f88da71b9b9cbe21#285dc4f39155954e6bb9af93f88da71b9b9cbe21"
+source = "git+https://github.com/navidrome/navidrome?rev=101145742f4762164202cb4858c9126258bdc463#101145742f4762164202cb4858c9126258bdc463"
 dependencies = [
  "base64",
  "serde",
