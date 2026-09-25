@@ -1,7 +1,7 @@
 {
   "name": "Navidrome ListenBrainz Sync",
   "author": "egecelikci",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Two-way loved-track sync with ListenBrainz and rating sync from CritiqueBrainz",
   "website": "https://github.com/egecelikci/navidrome-listenbrainz-plugin",
   "config": {

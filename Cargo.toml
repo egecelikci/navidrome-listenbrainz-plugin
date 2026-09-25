@@ -1,6 +1,6 @@
 [package]
 name = "navidrome-listenbrainz-plugin"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 description = "Two-way loved-track sync with ListenBrainz and rating sync from CritiqueBrainz"
 authors = ["egecelikci"]
