@@ -1,0 +1,39 @@
+[changelog]
+body = """
+{% macro repo() %}https://github.com/{{ remote.github.owner }}/{{ remote.github.repo }}{% endmacro %}\
+{% if version %}\
+    ## {{ version }} - {{ timestamp | date(format="%Y-%m-%d") }}\
+{% else %}\
+    ## Unreleased\
+{% endif %}\
+{% for group, commits in commits | group_by(attribute="group") %}
+    ### {{ group | striptags | trim }}
+    {% for commit in commits %}\
+        - {% if commit.scope %}**{{ commit.scope }}**: {% endif %}{{ commit.message }} ([`{{ commit.id | truncate(length=7, end="") }}`]({{ self::repo() }}/commit/{{ commit.id }}))
+    {% endfor %}\
+{% endfor %}
+"""
+trim = true
+footer = ""
+
+[remote.github]
+owner = "egecelikci"
+repo = "navidrome-listenbrainz-plugin"
+
+[git]
+conventional_commits = true
+filter_unconventional = false
+sort_commits = "newest"
+commit_parsers = [
+  { message = "^feat", group = "<!-- 1 -->Features" },
+  { message = "^fix", group = "<!-- 2 -->Fixes" },
+  { message = "^perf", group = "<!-- 3 -->Performance" },
+  { message = "^refactor", group = "<!-- 4 -->Refactor" },
+  { message = "^docs", group = "<!-- 5 -->Documentation" },
+  { message = "^test", group = "<!-- 6 -->Tests" },
+  { message = "^build", group = "<!-- 7 -->Build" },
+  { message = "^ci", group = "<!-- 8 -->CI" },
+  { message = "^chore\\(release\\)", skip = true },
+  { message = "^chore", group = "<!-- 9 -->Chores" },
+  { message = ".*", group = "<!-- 10 -->Other" },
+]

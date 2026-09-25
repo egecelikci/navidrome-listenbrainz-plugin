@@ -254,6 +254,8 @@ zip -j navidrome-listenbrainz-plugin.ndp manifest.json target/wasm32-wasip1/rele
 navidrome plugin validate navidrome-listenbrainz-plugin.ndp
 ```
 - The plugin ID is the `.ndp` filename (minus extension); it determines the storage/KV paths, so keep the filename stable.
+- `./release.sh --build` runs the four steps above in one go, signs the package with the git SSH signing key when one is configured (Navidrome ignores the signature; it is only for users who verify downloads), and validates it with the `navidrome` binary or, failing that, `go run . plugin validate` in the checkout at `$NAVIDROME_SRC` (default `~/Git/navidrome`). `./release.sh X.Y.Z` also bumps `manifest.json` and `Cargo.toml`, commits `chore(release): X.Y.Z`, tags, pushes to both remotes, and publishes the GitHub release with the notes `git-cliff` groups by conventional-commit type.
+- The release asset keeps the plugin ID as its filename, so a user upgrades by replacing the file; a version in the filename would install a second plugin with its own config and KVStore.
 - Verify the parser against real ListenBrainz feedback JSON before touching live data; run with `dry_run = true` first.
 
 ## 13. Commit Messages
