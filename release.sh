@@ -4,12 +4,16 @@ cd "$(dirname "$0")"
 
 NDP=navidrome-listenbrainz-plugin.ndp
 
-sign() {
+signing_key() {
   local key
   key="$(git config --get user.signingkey)"
   key="${key/#\~/$HOME}"
-  if [ -n "$key" ] && [ -f "$key" ]; then
-    ssh-keygen -Y sign -f "$key" -n file "$NDP"
+  if [ -n "$key" ] && [ -f "$key" ]; then printf '%s' "$key"; fi
+}
+
+sign() {
+  if signing_key >/dev/null; then
+    ssh-keygen -Y sign -f "$(signing_key)" -n file "$NDP"
   else
     echo "release.sh: no signing key configured, publishing unsigned" >&2
   fi
@@ -63,7 +67,12 @@ build
 
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 git commit -am "chore(release): $VERSION"
-git tag "$VERSION"
+# Annotated tags carry the signature; a lightweight tag cannot, and hosts show no verified badge for it.
+if signing_key >/dev/null; then
+  git tag -s "$VERSION" -m "$VERSION"
+else
+  git tag -a "$VERSION" -m "$VERSION"
+fi
 git push origin "$BRANCH" "$VERSION"
 git push github "$BRANCH" "$VERSION"
 
