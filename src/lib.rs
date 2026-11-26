@@ -120,8 +120,10 @@ enum Status {
     Ok,
     /// Rejected for this record only; continue with the rest.
     Skip,
-    /// Stop the pass; retry later.
-    Stop,
+    /// Authentication failed for this user; stop only this user's outbound pass.
+    AuthFailed,
+    /// Rate limited or server error; stop ListenBrainz calls for the rest of the pass.
+    RateLimited,
 }
 
 /// One entry of the `user_links` config array.
@@ -314,6 +316,8 @@ fn run_sync() {
         settings.dry_run
     );
 
+    let mut lb_stopped = false;
+    let mut cb_stopped = false;
     for link in &settings.links {
         if !authorized.contains(&link.nd_username) {
             warn!(
@@ -325,71 +329,95 @@ fn run_sync() {
         // The ListenBrainz username doubles as the CritiqueBrainz identity when no separate
         // one is configured, so it is resolved first. An invalid token only disables the
         // ListenBrainz half: CritiqueBrainz needs no token at all.
-        let (lb_username, stop_pass) =
+        let lb_username = if lb_stopped {
+            None
+        } else {
             match resolve_lb_username(&link.token, settings.request_delay_ms) {
-                Ok(Some(lb_username)) => (Some(lb_username), false),
-                Ok(None) => {
-                    warn!(
-                        "ListenBrainz sync: ListenBrainz token for '{}' is invalid",
-                        link.nd_username
-                    );
-                    (None, false)
+                Ok((lb_username, exhausted)) => {
+                    if lb_username.is_none() {
+                        warn!(
+                            "ListenBrainz sync: ListenBrainz token for '{}' is invalid",
+                            link.nd_username
+                        );
+                    }
+                    if exhausted {
+                        warn!("ListenBrainz sync: rate-limit window exhausted; stopping ListenBrainz pass");
+                        lb_stopped = true;
+                    }
+                    lb_username
                 }
                 Err(Stop::RateLimited) => {
-                    warn!("ListenBrainz sync: rate limited while validating tokens; stopping pass");
-                    (None, true)
+                    warn!("ListenBrainz sync: rate limited while validating tokens; stopping ListenBrainz pass");
+                    lb_stopped = true;
+                    None
                 }
                 Err(Stop::Fatal(message)) => {
                     warn!(
                         "ListenBrainz sync: token validation failed for '{}': {message}",
                         link.nd_username
                     );
-                    (None, false)
+                    None
                 }
-            };
-        if !settings.cb_rules.is_empty() {
-            sync_critiquebrainz(
+            }
+        };
+        if !cb_stopped
+            && !settings.cb_rules.is_empty()
+            && sync_critiquebrainz(
                 &settings,
                 link,
                 lb_username.as_deref(),
                 settings.max_per_run,
-            );
+            )
+        {
+            cb_stopped = true;
         }
-        if let Some(lb_username) = lb_username {
-            sync_user(&settings, link, &lb_username);
+        if !lb_stopped {
+            if let Some(lb_username) = lb_username {
+                if sync_user(&settings, link, &lb_username) {
+                    lb_stopped = true;
+                }
+            }
         }
-        if stop_pass {
+        if lb_stopped && (cb_stopped || settings.cb_rules.is_empty()) {
             break;
         }
     }
     info!("Sync complete");
 }
 
-/// Reconciles one user's Loves and Favorites.
-fn sync_user(settings: &Settings, link: &UserLink, lb_username: &str) {
+/// Reconciles one user's Loves and Favorites. Returns true when ListenBrainz asked the client to
+/// stop making requests for the rest of the pass.
+fn sync_user(settings: &Settings, link: &UserLink, lb_username: &str) -> bool {
     let mut settled = load_settled(&link.nd_username);
     let mut budget = settings.max_per_run;
     if settings.sync_inbound && budget > 0 {
-        budget -= sync_inbound(settings, link, lb_username, &mut settled, budget);
+        let (applied, rate_limited) =
+            sync_inbound(settings, link, lb_username, &mut settled, budget);
+        budget -= applied;
+        if rate_limited {
+            return true;
+        }
     }
     if settings.sync_outbound && budget > 0 {
-        sync_outbound(settings, link, &mut settled, budget);
+        return sync_outbound(settings, link, &mut settled, budget);
     }
+    false
 }
 
-/// Derives the ListenBrainz username from a user token. `None` means the token is invalid.
-fn resolve_lb_username(token: &str, delay_ms: u64) -> Result<Option<String>, Stop> {
+/// Derives the ListenBrainz username from a user token and reports whether the rate-limit window
+/// was exhausted. `None` means the token is invalid.
+fn resolve_lb_username(token: &str, delay_ms: u64) -> Result<(Option<String>, bool), Stop> {
     let url = format!("{LB_ROOT}/validate-token");
     let auth = format!("Token {token}");
-    let (body, _) = api_get(&url, Some(&auth), delay_ms)?;
+    let (body, exhausted) = api_get(&url, Some(&auth), delay_ms)?;
     let parsed: TokenValidation = serde_json::from_str(&body)
         .map_err(|e| Stop::Fatal(format!("malformed validate-token response: {e}")))?;
     if !parsed.valid {
-        return Ok(None);
+        return Ok((None, exhausted));
     }
     match parsed.user_name {
-        Some(name) if !name.is_empty() => Ok(Some(name)),
-        _ => Ok(None),
+        Some(name) if !name.is_empty() => Ok((Some(name), exhausted)),
+        _ => Ok((None, exhausted)),
     }
 }
 
@@ -425,15 +453,17 @@ fn mark_settled(settings: &Settings, settled: &mut HashSet<String>, nd_username:
     }
 }
 
-/// Marks as Favorites every ListenBrainz Love that is not already settled.
+/// Marks as Favorites every ListenBrainz Love that is not already settled. Returns `(applied,
+/// rate_limited)`.
 fn sync_inbound(
     settings: &Settings,
     link: &UserLink,
     lb_username: &str,
     settled: &mut HashSet<String>,
     budget: i64,
-) -> i64 {
+) -> (i64, bool) {
     let mut applied = 0i64;
+    let mut rate_limited = false;
     let mut offset = 0i64;
     while applied < budget {
         let url = format!(
@@ -445,6 +475,7 @@ fn sync_inbound(
             Ok(page) => page,
             Err(Stop::RateLimited) => {
                 warn!("ListenBrainz sync: inbound pausing (rate limited or server error)");
+                rate_limited = true;
                 break;
             }
             Err(Stop::Fatal(message)) => {
@@ -460,6 +491,10 @@ fn sync_inbound(
             }
         };
         if page.feedback.is_empty() {
+            if exhausted {
+                warn!("ListenBrainz sync: inbound rate-limit window exhausted");
+                rate_limited = true;
+            }
             break;
         }
 
@@ -471,6 +506,7 @@ fn sync_inbound(
 
         if exhausted {
             warn!("ListenBrainz sync: inbound rate-limit window exhausted");
+            rate_limited = true;
             break;
         }
         offset += page.count.max(1);
@@ -481,7 +517,7 @@ fn sync_inbound(
             break;
         }
     }
-    applied
+    (applied, rate_limited)
 }
 
 /// Selects the loved, not-yet-settled, valid recording MBIDs from a feedback page.
@@ -595,19 +631,20 @@ fn favorite_tracks(link: &UserLink, media_ids: &[String]) -> bool {
     }
 }
 
-/// Loves every locally favorited recording that is not already settled.
+/// Loves every locally favorited recording that is not already settled. Returns true when
+/// ListenBrainz asked the client to stop making requests for the rest of the pass.
 fn sync_outbound(
     settings: &Settings,
     link: &UserLink,
     settled: &mut HashSet<String>,
     budget: i64,
-) {
+) -> bool {
     let uri = format!("getStarred2?u={}", percent_encode(&link.nd_username));
     let body = match subsonicapi::call(&uri) {
         Ok(body) => body,
         Err(e) => {
             warn!("ListenBrainz sync: getStarred2 failed: {e}");
-            return;
+            return false;
         }
     };
     let songs = match serde_json::from_str::<SubsonicEnvelope>(&body) {
@@ -618,12 +655,13 @@ fn sync_outbound(
             .unwrap_or_default(),
         Err(e) => {
             warn!("ListenBrainz sync: malformed getStarred2 response: {e}");
-            return;
+            return false;
         }
     };
 
     let mut pushed = 0i64;
     let mut seen = HashSet::new();
+    let mut rate_limited = false;
     for song in songs {
         if pushed >= budget {
             break;
@@ -652,19 +690,27 @@ fn sync_outbound(
                 pushed += 1;
             }
             Status::Skip => {}
-            Status::Stop => {
-                warn!("ListenBrainz sync: outbound pausing (rate limited, server error, or auth failure)");
+            Status::AuthFailed => {
+                warn!("ListenBrainz sync: outbound authentication failed");
+                break;
+            }
+            Status::RateLimited => {
+                warn!("ListenBrainz sync: outbound pausing (rate limited or server error)");
+                rate_limited = true;
                 break;
             }
         }
         if exhausted {
             warn!("ListenBrainz sync: outbound rate-limit window exhausted");
+            rate_limited = true;
             break;
         }
     }
+    rate_limited
 }
 
-/// Copies CritiqueBrainz ratings into Navidrome for one user.
+/// Copies CritiqueBrainz ratings into Navidrome for one user. Returns true when CritiqueBrainz
+/// asked the client to stop making requests for the rest of the pass.
 ///
 /// CritiqueBrainz is independent of ListenBrainz: the ratings live on public reviews, so only
 /// a username is needed and no token or OAuth flow is involved. A CritiqueBrainz user id is
@@ -674,7 +720,7 @@ fn sync_critiquebrainz(
     link: &UserLink,
     lb_username: Option<&str>,
     budget: i64,
-) {
+) -> bool {
     let username = match link.cb_username.as_deref().or(lb_username) {
         Some(username) => username,
         None => {
@@ -682,22 +728,30 @@ fn sync_critiquebrainz(
                 "CritiqueBrainz sync: no username for '{}' and no ListenBrainz username to fall back on",
                 link.nd_username
             );
-            return;
+            return false;
         }
     };
     let user_id = match resolve_cb_user_id(username, settings.request_delay_ms) {
-        Ok(Some(user_id)) => user_id,
-        Ok(None) => {
+        Ok((Some(user_id), exhausted)) => {
+            if exhausted {
+                warn!(
+                    "CritiqueBrainz sync: rate-limit window exhausted while resolving '{username}'"
+                );
+                return true;
+            }
+            user_id
+        }
+        Ok((None, exhausted)) => {
             warn!("CritiqueBrainz sync: CritiqueBrainz user '{username}' has no id");
-            return;
+            return exhausted;
         }
         Err(Stop::RateLimited) => {
             warn!("CritiqueBrainz sync: rate limited while resolving '{username}'; stopping pass");
-            return;
+            return true;
         }
         Err(Stop::Fatal(message)) => {
             warn!("CritiqueBrainz sync: could not resolve '{username}': {message}");
-            return;
+            return false;
         }
     };
     // The username can be inherited from the ListenBrainz link, and binding the wrong account
@@ -713,7 +767,7 @@ fn sync_critiquebrainz(
         if changes >= budget {
             break;
         }
-        changes += sync_cb_entity(
+        let (attempted, rate_limited) = sync_cb_entity(
             settings,
             link,
             &user_id,
@@ -722,25 +776,34 @@ fn sync_critiquebrainz(
             &mut settled,
             budget - changes,
         );
+        changes += attempted;
+        if rate_limited {
+            return true;
+        }
     }
+    false
 }
 
-/// Resolves a CritiqueBrainz username (or user id) to the id the reviews API filters on.
-fn resolve_cb_user_id(username: &str, delay_ms: u64) -> Result<Option<String>, Stop> {
+/// Resolves a CritiqueBrainz username (or user id) to the id the reviews API filters on, along
+/// with whether the rate-limit window was exhausted.
+fn resolve_cb_user_id(username: &str, delay_ms: u64) -> Result<(Option<String>, bool), Stop> {
     let url = format!("{CB_ROOT}/user/{}", percent_encode(username));
-    let (body, _) = api_get(&url, None, delay_ms)?;
+    let (body, exhausted) = api_get(&url, None, delay_ms)?;
     let parsed: CbUserEnvelope = serde_json::from_str(&body)
         .map_err(|e| Stop::Fatal(format!("malformed user response: {e}")))?;
-    Ok(parsed.user.map(|user| user.id).filter(|id| !id.is_empty()))
+    Ok((
+        parsed.user.map(|user| user.id).filter(|id| !id.is_empty()),
+        exhausted,
+    ))
 }
 
 /// Pages one entity type's ratings and applies every state that is not already settled.
 ///
-/// Returns how many changes were attempted, which is what the per-pass budget caps. Skipping an
-/// already-settled rating is free, and so is a rating with no local match, so the *walk* stays
-/// bounded by the account's rating count rather than by the budget: one request per page, at the
-/// politeness floor. Counting only changes is also what stops a permanent backlog of unmatched
-/// ratings from pinning every pass to the same first page and starving everything behind it.
+/// Returns `(attempted_changes, rate_limited)`. Skipping an already-settled rating is free, and
+/// so is a rating with no local match, so the *walk* stays bounded by the account's rating count
+/// rather than by the budget: one request per page, at the politeness floor. Counting only
+/// changes is also what stops a permanent backlog of unmatched ratings from pinning every pass
+/// to the same first page and starving everything behind it.
 fn sync_cb_entity(
     settings: &Settings,
     link: &UserLink,
@@ -749,10 +812,11 @@ fn sync_cb_entity(
     rule: CbRule,
     settled: &mut HashMap<String, String>,
     budget: i64,
-) -> i64 {
+) -> (i64, bool) {
     let mut changes = 0i64;
     let mut examined = 0i64;
     let mut unmatched = 0i64;
+    let mut rate_limited = false;
     let mut offset = 0i64;
     loop {
         // Reaching here means a previous page did not exhaust the list, so there really is more
@@ -778,6 +842,7 @@ fn sync_cb_entity(
                     "CritiqueBrainz sync: {} pausing (rate limited or server error)",
                     entity.cb_name()
                 );
+                rate_limited = true;
                 break;
             }
             Err(Stop::Fatal(message)) => {
@@ -799,6 +864,10 @@ fn sync_cb_entity(
             }
         };
         if page.reviews.is_empty() {
+            if exhausted {
+                warn!("CritiqueBrainz sync: rate-limit window exhausted");
+                rate_limited = true;
+            }
             break;
         }
 
@@ -849,13 +918,14 @@ fn sync_cb_entity(
             }
         }
 
+        if exhausted {
+            warn!("CritiqueBrainz sync: rate-limit window exhausted");
+            rate_limited = true;
+            break;
+        }
         match cb_next_offset(offset, page.reviews.len() as i64, page.count) {
             Some(next) => offset = next,
             None => break,
-        }
-        if exhausted {
-            warn!("CritiqueBrainz sync: rate-limit window exhausted");
-            break;
         }
     }
     // A rating with no local match is normal (the library simply does not have it); a whole
@@ -866,7 +936,7 @@ fn sync_cb_entity(
         entity.cb_name(),
         link.nd_username
     );
-    changes
+    (changes, rate_limited)
 }
 
 /// The next CritiqueBrainz page offset, or `None` when the list is exhausted. Advancing by the
@@ -1246,9 +1316,8 @@ fn submit_love(token: &str, mbid: &str, delay_ms: u64) -> Result<(Status, bool),
     let exhausted = rate_limit_exhausted(&response.headers);
     let status = match response.status_code {
         200..=299 => Status::Ok,
-        401 | 403 => Status::Stop,
-        429 => Status::Stop,
-        500..=599 => Status::Stop,
+        401 | 403 => Status::AuthFailed,
+        429 | 500..=599 => Status::RateLimited,
         400..=499 => Status::Skip,
         _ => Status::Skip,
     };
