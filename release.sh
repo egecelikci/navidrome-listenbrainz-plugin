@@ -74,11 +74,17 @@ else
   git tag -a "$VERSION" -m "$VERSION"
 fi
 git push origin "$BRANCH" "$VERSION"
-git push github "$BRANCH" "$VERSION"
+if git remote get-url github >/dev/null 2>&1; then
+  git push github "$BRANCH" "$VERSION"
+fi
 
 ASSETS=("$NDP")
 if [ -f "$NDP.sig" ]; then
   ASSETS+=("$NDP.sig")
 fi
 
-printf '%s\n' "$NOTES" | gh release create "$VERSION" --title "$VERSION" --notes-file - --prerelease "${ASSETS[@]}"
+RELEASE_FLAGS=()
+if [[ "$VERSION" == 0.* ]]; then
+  RELEASE_FLAGS+=(--prerelease)
+fi
+printf '%s\n' "$NOTES" | gh release create "$VERSION" --title "$VERSION" --notes-file - "${RELEASE_FLAGS[@]}" "${ASSETS[@]}"
