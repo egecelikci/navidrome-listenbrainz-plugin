@@ -1,7 +1,9 @@
 # Navidrome ListenBrainz Sync
 
 > [!WARNING]
-> This plugin was fully written by an LLM (DeepSeek V4.1 Flash), not by hand. No person has thoroughly reviewed the design or tested it yet. It is **beta** software: expect rough edges and use at your own risk.
+> This plugin was fully written by LLMs (DeepSeek V4.1 Flash, Gemini 4 Neon), not by hand.
+> No person has thoroughly reviewed the design.
+> Expect rough edges and use at your own risk.
 
 Two-way sync between Navidrome Favorites (the heart) and ListenBrainz Loves, plus a one-way Rating sync from CritiqueBrainz into Navidrome.
 
