@@ -620,37 +620,13 @@ fn resolve_and_favorite(
     if settings.dry_run {
         return dry_run_count as i64;
     }
-    if to_favorite.is_empty() || !favorite_tracks(link, &to_favorite) {
+    if to_favorite.is_empty() || !favorite_items(link, "id", &to_favorite, "ListenBrainz sync") {
         return 0;
     }
     for mbid in &to_favorite_mbids {
         mark_settled(settings, settled, &link.nd_username, mbid);
     }
     to_favorite_mbids.len() as i64
-}
-
-/// Marks tracks as Favorites in one batched Subsonic `star` call.
-fn favorite_tracks(link: &UserLink, media_ids: &[String]) -> bool {
-    let mut query = String::from("star?");
-    for id in media_ids {
-        query.push_str("id=");
-        query.push_str(&percent_encode(id));
-        query.push('&');
-    }
-    query.push_str("u=");
-    query.push_str(&percent_encode(&link.nd_username));
-
-    match subsonicapi::call(&query) {
-        Ok(body) if subsonic_ok(&body) => true,
-        Ok(body) => {
-            warn!("ListenBrainz sync: favorite call failed: {body}");
-            false
-        }
-        Err(e) => {
-            warn!("ListenBrainz sync: favorite call error: {e}");
-            false
-        }
-    }
 }
 
 /// Loves every locally favorited recording that is not already settled. Returns true when
@@ -1029,7 +1005,7 @@ fn apply_cb_state(
             );
         }
         mark_cb_settled(settings, settled, &link.nd_username, &entity_key, &state);
-        return Some((rating_targets.len() + favorite_targets.len()) as i64);
+        return Some(rating_targets.len() as i64 + i64::from(!favorite_targets.is_empty()));
     }
 
     // An attempted write counts against the budget even when it fails: a systemic failure would
@@ -1041,9 +1017,18 @@ fn apply_cb_state(
             return Some(attempted);
         }
     }
-    for item in &favorite_targets {
+    if !favorite_targets.is_empty() {
         attempted += 1;
-        if !favorite_item(link, entity, &item.id) {
+        let favorite_ids: Vec<String> = favorite_targets
+            .iter()
+            .map(|item| item.id.clone())
+            .collect();
+        if !favorite_items(
+            link,
+            entity.favorite_param(),
+            &favorite_ids,
+            "CritiqueBrainz sync",
+        ) {
             return Some(attempted);
         }
     }
@@ -1142,30 +1127,36 @@ fn set_rating(link: &UserLink, id: &str, rating: i64) -> bool {
         percent_encode(id),
         percent_encode(&link.nd_username)
     );
-    subsonic_call_ok(&uri, "setRating")
+    subsonic_call_ok(&uri, "setRating", "CritiqueBrainz sync")
 }
 
-/// Marks one Navidrome item as a Favorite, through Subsonic's `star` endpoint.
-fn favorite_item(link: &UserLink, entity: CbEntity, id: &str) -> bool {
-    let uri = format!(
-        "star?{}={}&u={}",
-        entity.favorite_param(),
-        percent_encode(id),
-        percent_encode(&link.nd_username)
-    );
-    subsonic_call_ok(&uri, "star")
+/// Marks Navidrome items as Favorites in one batched Subsonic `star` call.
+fn favorite_items(link: &UserLink, param: &str, ids: &[String], context: &str) -> bool {
+    if ids.is_empty() {
+        return true;
+    }
+    let mut query = String::from("star?");
+    for id in ids {
+        query.push_str(param);
+        query.push('=');
+        query.push_str(&percent_encode(id));
+        query.push('&');
+    }
+    query.push_str("u=");
+    query.push_str(&percent_encode(&link.nd_username));
+    subsonic_call_ok(&query, "star", context)
 }
 
 /// Runs one Subsonic write and reports whether it succeeded. Failures are logged, never fatal.
-fn subsonic_call_ok(uri: &str, action: &str) -> bool {
+fn subsonic_call_ok(uri: &str, action: &str, context: &str) -> bool {
     match subsonicapi::call(uri) {
         Ok(body) if subsonic_ok(&body) => true,
         Ok(body) => {
-            warn!("CritiqueBrainz sync: {action} call failed: {body}");
+            warn!("{context}: {action} call failed: {body}");
             false
         }
         Err(e) => {
-            warn!("CritiqueBrainz sync: {action} call error: {e}");
+            warn!("{context}: {action} call error: {e}");
             false
         }
     }
