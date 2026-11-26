@@ -647,17 +647,22 @@ fn sync_outbound(
             return false;
         }
     };
-    let songs = match serde_json::from_str::<SubsonicEnvelope>(&body) {
-        Ok(envelope) => envelope
-            .response
-            .starred2
-            .map(|starred| starred.song)
-            .unwrap_or_default(),
+    let envelope = match serde_json::from_str::<SubsonicEnvelope>(&body) {
+        Ok(envelope) => envelope,
         Err(e) => {
             warn!("ListenBrainz sync: malformed getStarred2 response: {e}");
             return false;
         }
     };
+    if envelope.response.status != "ok" {
+        warn!("ListenBrainz sync: getStarred2 failed: {body}");
+        return false;
+    }
+    let songs = envelope
+        .response
+        .starred2
+        .map(|starred| starred.song)
+        .unwrap_or_default();
 
     let mut pushed = 0i64;
     let mut seen = HashSet::new();
@@ -1081,6 +1086,10 @@ fn lookup_local_items(link: &UserLink, entity: CbEntity, mbid: &str) -> Vec<Sear
             return Vec::new();
         }
     };
+    if envelope.response.status != "ok" {
+        warn!("CritiqueBrainz sync: search3 failed for {mbid}: {body}");
+        return Vec::new();
+    }
     let Some(result) = envelope.response.search_result3 else {
         return Vec::new();
     };
