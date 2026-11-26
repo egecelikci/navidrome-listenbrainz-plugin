@@ -563,9 +563,10 @@ fn resolve_and_favorite(
 ) -> i64 {
     let mut to_favorite = Vec::new();
     let mut to_favorite_mbids = Vec::new();
+    let mut dry_run_count = 0usize;
 
     for chunk in candidates.chunks(settings.batch_size) {
-        if to_favorite.len() >= limit {
+        if to_favorite.len() + dry_run_count >= limit {
             break;
         }
         let songs: Vec<SongRef> = chunk
@@ -591,10 +592,13 @@ fn resolve_and_favorite(
                     if track.starred {
                         mark_settled(settings, settled, &link.nd_username, mbid);
                     } else if settings.dry_run {
-                        info!(
-                            "ListenBrainz sync [dry-run]: would favorite '{}'",
-                            track.title
-                        );
+                        if dry_run_count < limit {
+                            info!(
+                                "ListenBrainz sync [dry-run]: would favorite '{}'",
+                                track.title
+                            );
+                            dry_run_count += 1;
+                        }
                     } else if to_favorite.len() < limit {
                         to_favorite.push(track.id);
                         to_favorite_mbids.push(mbid.clone());
@@ -605,6 +609,9 @@ fn resolve_and_favorite(
         }
     }
 
+    if settings.dry_run {
+        return dry_run_count as i64;
+    }
     if to_favorite.is_empty() || !favorite_tracks(link, &to_favorite) {
         return 0;
     }
@@ -688,6 +695,7 @@ fn sync_outbound(
         }
         if settings.dry_run {
             info!("ListenBrainz sync [dry-run]: would love {mbid}");
+            pushed += 1;
             continue;
         }
         let (status, exhausted) = match submit_love(&link.token, &mbid, settings.request_delay_ms) {
@@ -1013,7 +1021,7 @@ fn apply_cb_state(
             );
         }
         mark_cb_settled(settings, settled, &link.nd_username, &entity_key, &state);
-        return Some(0);
+        return Some((rating_targets.len() + favorite_targets.len()) as i64);
     }
 
     // An attempted write counts against the budget even when it fails: a systemic failure would
