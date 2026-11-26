@@ -54,6 +54,9 @@ const CB_PAGE_SIZE: i64 = 50;
 /// items (a release group may hold duplicate albums, a recording can sit on many
 /// compilations), so the lookup asks for all of them rather than just the first.
 const MATCH_COUNT: i64 = 50;
+/// Per-request HTTP timeout (the host default) so one stalled call cannot consume the 30s
+/// plugin call budget.
+const HTTP_TIMEOUT_MS: i32 = 10_000;
 
 /// Plugin entry point. Kept stateless: every callback re-reads config and KVStore.
 #[derive(Default)]
@@ -360,6 +363,13 @@ fn run_sync() {
                 }
             }
         };
+        if !lb_stopped {
+            if let Some(lb_username) = lb_username.as_deref() {
+                if sync_user(&settings, link, lb_username) {
+                    lb_stopped = true;
+                }
+            }
+        }
         if !cb_stopped
             && !settings.cb_rules.is_empty()
             && sync_critiquebrainz(
@@ -370,13 +380,6 @@ fn run_sync() {
             )
         {
             cb_stopped = true;
-        }
-        if !lb_stopped {
-            if let Some(lb_username) = lb_username {
-                if sync_user(&settings, link, &lb_username) {
-                    lb_stopped = true;
-                }
-            }
         }
         if lb_stopped && (cb_stopped || settings.cb_rules.is_empty()) {
             break;
@@ -1273,7 +1276,7 @@ fn api_get(url: &str, auth: Option<&str>, delay_ms: u64) -> Result<(String, bool
         method: "GET".to_string(),
         url: url.to_string(),
         headers,
-        timeout_ms: 30_000,
+        timeout_ms: HTTP_TIMEOUT_MS,
         ..Default::default()
     };
     let response = http::send(request)
@@ -1310,7 +1313,7 @@ fn submit_love(token: &str, mbid: &str, delay_ms: u64) -> Result<(Status, bool),
         url: format!("{LB_ROOT}/feedback/recording-feedback"),
         headers,
         body,
-        timeout_ms: 30_000,
+        timeout_ms: HTTP_TIMEOUT_MS,
         ..Default::default()
     };
     let response = http::send(request)
