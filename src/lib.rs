@@ -432,7 +432,10 @@ fn load_settled(nd_username: &str) -> HashSet<String> {
     match kvstore::list(&prefix) {
         Ok(keys) => keys
             .into_iter()
-            .filter_map(|key| key.strip_prefix(&prefix).map(str::to_string))
+            .filter_map(|key| {
+                key.strip_prefix(&prefix)
+                    .map(|mbid| mbid.to_ascii_lowercase())
+            })
             .collect(),
         Err(e) => {
             warn!("ListenBrainz sync: could not load settled state: {e}");
@@ -535,11 +538,12 @@ fn inbound_candidates(page: &FeedbackPage, settled: &HashSet<String>) -> Vec<Str
             warn!("ListenBrainz sync: skipping malformed MBID '{mbid}'");
             continue;
         }
-        if settled.contains(mbid) {
+        let mbid = mbid.to_ascii_lowercase();
+        if settled.contains(&mbid) {
             continue;
         }
-        if seen.insert(mbid.to_string()) {
-            candidates.push(mbid.to_string());
+        if seen.insert(mbid.clone()) {
+            candidates.push(mbid);
         }
     }
     candidates
@@ -675,6 +679,7 @@ fn sync_outbound(
         if mbid.is_empty() || !is_valid_mbid(&mbid) {
             continue;
         }
+        let mbid = mbid.to_ascii_lowercase();
         if settled.contains(&mbid) || !seen.insert(mbid.clone()) {
             continue;
         }
@@ -903,21 +908,14 @@ fn sync_cb_entity(
                 );
                 continue;
             }
-            let entity_key = cb_entity_key(entity, &review.entity_id);
+            let entity_id = review.entity_id.to_ascii_lowercase();
+            let entity_key = cb_entity_key(entity, &entity_id);
             let state = cb_state_value(rating, rule);
             if settled.get(&entity_key).map(String::as_str) == Some(state.as_str()) {
                 continue;
             }
             examined += 1;
-            match apply_cb_state(
-                settings,
-                link,
-                entity,
-                &review.entity_id,
-                rating,
-                rule,
-                settled,
-            ) {
+            match apply_cb_state(settings, link, entity, &entity_id, rating, rule, settled) {
                 None => unmatched += 1,
                 Some(attempted) => changes += attempted,
             }
@@ -1208,7 +1206,7 @@ fn load_cb_settled(nd_username: &str, dry_run: bool) -> HashMap<String, String> 
                 continue;
             };
             if let Ok(state) = String::from_utf8(raw) {
-                settled.insert(entity_key.to_string(), state);
+                settled.insert(entity_key.to_ascii_lowercase(), state);
             }
         }
     }
