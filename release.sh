@@ -6,9 +6,13 @@ NDP=navidrome-listenbrainz-plugin.ndp
 
 signing_key() {
   local key
-  key="$(git config --get user.signingkey)"
+  key="$(git config --get user.signingkey || true)"
   key="${key/#\~/$HOME}"
-  if [ -n "$key" ] && [ -f "$key" ]; then printf '%s' "$key"; fi
+  if [ -n "$key" ] && [ -f "$key" ]; then
+    printf '%s' "$key"
+  else
+    return 1
+  fi
 }
 
 sign() {
