@@ -320,6 +320,7 @@ fn run_sync() {
     );
 
     let lb_enabled = settings.sync_inbound || settings.sync_outbound;
+    let mut api_called = false;
     let mut lb_stopped = false;
     let mut cb_stopped = false;
     for link in &settings.links {
@@ -338,7 +339,7 @@ fn run_sync() {
         let lb_username = if lb_stopped || !need_lb_username {
             None
         } else {
-            match resolve_lb_username(&link.token, settings.request_delay_ms) {
+            match resolve_lb_username(&link.token, settings.request_delay_ms, &mut api_called) {
                 Ok((lb_username, exhausted)) => {
                     if lb_username.is_none() {
                         warn!(
@@ -368,7 +369,7 @@ fn run_sync() {
         };
         if !lb_stopped && lb_enabled {
             if let Some(lb_username) = lb_username.as_deref() {
-                if sync_user(&settings, link, lb_username) {
+                if sync_user(&settings, link, lb_username, &mut api_called) {
                     lb_stopped = true;
                 }
             }
@@ -380,6 +381,7 @@ fn run_sync() {
                 link,
                 lb_username.as_deref(),
                 settings.max_per_run,
+                &mut api_called,
             )
         {
             cb_stopped = true;
@@ -393,29 +395,44 @@ fn run_sync() {
 
 /// Reconciles one user's Loves and Favorites. Returns true when ListenBrainz asked the client to
 /// stop making requests for the rest of the pass.
-fn sync_user(settings: &Settings, link: &UserLink, lb_username: &str) -> bool {
+fn sync_user(
+    settings: &Settings,
+    link: &UserLink,
+    lb_username: &str,
+    api_called: &mut bool,
+) -> bool {
     let mut settled = load_settled(&link.nd_username);
     let mut budget = settings.max_per_run;
     if settings.sync_inbound && budget > 0 {
-        let (applied, rate_limited) =
-            sync_inbound(settings, link, lb_username, &mut settled, budget);
+        let (applied, rate_limited) = sync_inbound(
+            settings,
+            link,
+            lb_username,
+            &mut settled,
+            budget,
+            api_called,
+        );
         budget -= applied;
         if rate_limited {
             return true;
         }
     }
     if settings.sync_outbound && budget > 0 {
-        return sync_outbound(settings, link, &mut settled, budget);
+        return sync_outbound(settings, link, &mut settled, budget, api_called);
     }
     false
 }
 
 /// Derives the ListenBrainz username from a user token and reports whether the rate-limit window
 /// was exhausted. `None` means the token is invalid.
-fn resolve_lb_username(token: &str, delay_ms: u64) -> Result<(Option<String>, bool), Stop> {
+fn resolve_lb_username(
+    token: &str,
+    delay_ms: u64,
+    api_called: &mut bool,
+) -> Result<(Option<String>, bool), Stop> {
     let url = format!("{LB_ROOT}/validate-token");
     let auth = format!("Token {token}");
-    let (body, exhausted) = api_get(&url, Some(&auth), delay_ms)?;
+    let (body, exhausted) = api_get(&url, Some(&auth), delay_ms, api_called)?;
     let parsed: TokenValidation = serde_json::from_str(&body)
         .map_err(|e| Stop::Fatal(format!("malformed validate-token response: {e}")))?;
     if !parsed.valid {
@@ -470,6 +487,7 @@ fn sync_inbound(
     lb_username: &str,
     settled: &mut HashSet<String>,
     budget: i64,
+    api_called: &mut bool,
 ) -> (i64, bool) {
     let mut applied = 0i64;
     let mut rate_limited = false;
@@ -480,18 +498,19 @@ fn sync_inbound(
             percent_encode(lb_username)
         );
         let auth = format!("Token {}", link.token);
-        let (body, exhausted) = match api_get(&url, Some(&auth), settings.request_delay_ms) {
-            Ok(page) => page,
-            Err(Stop::RateLimited) => {
-                warn!("ListenBrainz sync: inbound pausing (rate limited or server error)");
-                rate_limited = true;
-                break;
-            }
-            Err(Stop::Fatal(message)) => {
-                warn!("ListenBrainz sync: inbound stopped: {message}");
-                break;
-            }
-        };
+        let (body, exhausted) =
+            match api_get(&url, Some(&auth), settings.request_delay_ms, api_called) {
+                Ok(page) => page,
+                Err(Stop::RateLimited) => {
+                    warn!("ListenBrainz sync: inbound pausing (rate limited or server error)");
+                    rate_limited = true;
+                    break;
+                }
+                Err(Stop::Fatal(message)) => {
+                    warn!("ListenBrainz sync: inbound stopped: {message}");
+                    break;
+                }
+            };
         let page: FeedbackPage = match serde_json::from_str(&body) {
             Ok(page) => page,
             Err(e) => {
@@ -639,6 +658,7 @@ fn sync_outbound(
     link: &UserLink,
     settled: &mut HashSet<String>,
     budget: i64,
+    api_called: &mut bool,
 ) -> bool {
     let uri = format!("getStarred2?u={}", percent_encode(&link.nd_username));
     let body = match subsonicapi::call(&uri) {
@@ -685,13 +705,14 @@ fn sync_outbound(
             pushed += 1;
             continue;
         }
-        let (status, exhausted) = match submit_love(&link.token, &mbid, settings.request_delay_ms) {
-            Ok(result) => result,
-            Err(e) => {
-                warn!("ListenBrainz sync: feedback request failed: {e}");
-                break;
-            }
-        };
+        let (status, exhausted) =
+            match submit_love(&link.token, &mbid, settings.request_delay_ms, api_called) {
+                Ok(result) => result,
+                Err(e) => {
+                    warn!("ListenBrainz sync: feedback request failed: {e}");
+                    break;
+                }
+            };
         match status {
             Status::Ok => {
                 mark_settled(settings, settled, &link.nd_username, &mbid);
@@ -728,6 +749,7 @@ fn sync_critiquebrainz(
     link: &UserLink,
     lb_username: Option<&str>,
     budget: i64,
+    api_called: &mut bool,
 ) -> bool {
     let username = match link.cb_username.as_deref().or(lb_username) {
         Some(username) => username,
@@ -739,7 +761,7 @@ fn sync_critiquebrainz(
             return false;
         }
     };
-    let user_id = match resolve_cb_user_id(username, settings.request_delay_ms) {
+    let user_id = match resolve_cb_user_id(username, settings.request_delay_ms, api_called) {
         Ok((Some(user_id), exhausted)) => {
             if exhausted {
                 warn!(
@@ -783,6 +805,7 @@ fn sync_critiquebrainz(
             *rule,
             &mut settled,
             budget - changes,
+            api_called,
         );
         changes += attempted;
         if rate_limited {
@@ -794,9 +817,13 @@ fn sync_critiquebrainz(
 
 /// Resolves a CritiqueBrainz username (or user id) to the id the reviews API filters on, along
 /// with whether the rate-limit window was exhausted.
-fn resolve_cb_user_id(username: &str, delay_ms: u64) -> Result<(Option<String>, bool), Stop> {
+fn resolve_cb_user_id(
+    username: &str,
+    delay_ms: u64,
+    api_called: &mut bool,
+) -> Result<(Option<String>, bool), Stop> {
     let url = format!("{CB_ROOT}/user/{}", percent_encode(username));
-    let (body, exhausted) = api_get(&url, None, delay_ms)?;
+    let (body, exhausted) = api_get(&url, None, delay_ms, api_called)?;
     let parsed: CbUserEnvelope = serde_json::from_str(&body)
         .map_err(|e| Stop::Fatal(format!("malformed user response: {e}")))?;
     Ok((
@@ -812,6 +839,7 @@ fn resolve_cb_user_id(username: &str, delay_ms: u64) -> Result<(Option<String>, 
 /// rather than by the budget: one request per page, at the politeness floor. Counting only
 /// changes is also what stops a permanent backlog of unmatched ratings from pinning every pass
 /// to the same first page and starving everything behind it.
+#[allow(clippy::too_many_arguments)]
 fn sync_cb_entity(
     settings: &Settings,
     link: &UserLink,
@@ -820,6 +848,7 @@ fn sync_cb_entity(
     rule: CbRule,
     settled: &mut HashMap<String, String>,
     budget: i64,
+    api_called: &mut bool,
 ) -> (i64, bool) {
     let mut changes = 0i64;
     let mut examined = 0i64;
@@ -843,7 +872,7 @@ fn sync_cb_entity(
             percent_encode(user_id),
             entity.cb_name()
         );
-        let (body, exhausted) = match api_get(&url, None, settings.request_delay_ms) {
+        let (body, exhausted) = match api_get(&url, None, settings.request_delay_ms, api_called) {
             Ok(page) => page,
             Err(Stop::RateLimited) => {
                 warn!(
@@ -1271,10 +1300,20 @@ fn cb_state_value(rating: i64, rule: CbRule) -> String {
 /// CritiqueBrainz rating endpoints are public, so they pass `None`. The bool is true when the
 /// rate-limit window is exhausted, so the caller must make no further API calls.
 ///
-/// Every request is followed by the configured gap, so no two ListenBrainz or CritiqueBrainz
-/// calls in a pass can land closer together than the politeness floor, whatever the surrounding
-/// loop does.
-fn api_get(url: &str, auth: Option<&str>, delay_ms: u64) -> Result<(String, bool), Stop> {
+/// Every follow-up request waits the configured gap beforehand, so no two ListenBrainz or
+/// CritiqueBrainz calls in a pass can land closer together than the politeness floor without
+/// sleeping after the final call.
+fn api_get(
+    url: &str,
+    auth: Option<&str>,
+    delay_ms: u64,
+    api_called: &mut bool,
+) -> Result<(String, bool), Stop> {
+    if *api_called {
+        sleep_ms(delay_ms);
+    }
+    *api_called = true;
+
     let mut headers = HashMap::new();
     if let Some(auth) = auth {
         headers.insert("Authorization".to_string(), auth.to_string());
@@ -1303,13 +1342,22 @@ fn api_get(url: &str, auth: Option<&str>, delay_ms: u64) -> Result<(String, bool
     let exhausted = rate_limit_exhausted(&response.headers);
     let body = String::from_utf8(response.body)
         .map_err(|e| Stop::Fatal(format!("invalid UTF-8 response: {e}")))?;
-    sleep_ms(delay_ms);
     Ok((body, exhausted))
 }
 
 /// Submits love feedback for a single recording. One feedback per request is an API constraint.
 /// The bool is true when the rate-limit window is exhausted.
-fn submit_love(token: &str, mbid: &str, delay_ms: u64) -> Result<(Status, bool), String> {
+fn submit_love(
+    token: &str,
+    mbid: &str,
+    delay_ms: u64,
+    api_called: &mut bool,
+) -> Result<(Status, bool), String> {
+    if *api_called {
+        sleep_ms(delay_ms);
+    }
+    *api_called = true;
+
     let payload = serde_json::json!({ "recording_mbid": mbid, "score": 1 });
     let body = serde_json::to_vec(&payload).map_err(|e| e.to_string())?;
 
@@ -1341,7 +1389,6 @@ fn submit_love(token: &str, mbid: &str, delay_ms: u64) -> Result<(Status, bool),
         400..=499 => Status::Skip,
         _ => Status::Skip,
     };
-    sleep_ms(delay_ms);
     Ok((status, exhausted))
 }
 
@@ -1385,7 +1432,8 @@ fn subsonic_ok(body: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Sleeps between writes so ListenBrainz is never hammered. Backed by WASI `poll_oneoff`.
+/// Sleeps before follow-up API requests so remote hosts are never hammered. Backed by WASI
+/// `poll_oneoff`.
 fn sleep_ms(ms: u64) {
     if ms > 0 {
         std::thread::sleep(Duration::from_millis(ms));
