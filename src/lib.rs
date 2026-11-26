@@ -707,7 +707,7 @@ fn sync_critiquebrainz(
         link.nd_username
     );
 
-    let mut settled = load_cb_settled(&link.nd_username);
+    let mut settled = load_cb_settled(&link.nd_username, settings.dry_run);
     let mut changes = 0i64;
     for (entity, rule) in &settings.cb_rules {
         if changes >= budget {
@@ -747,7 +747,7 @@ fn sync_cb_entity(
     user_id: &str,
     entity: CbEntity,
     rule: CbRule,
-    settled: &mut HashSet<String>,
+    settled: &mut HashMap<String, String>,
     budget: i64,
 ) -> i64 {
     let mut changes = 0i64;
@@ -829,7 +829,9 @@ fn sync_cb_entity(
                 );
                 continue;
             }
-            if settled.contains(&cb_state_key(entity, &review.entity_id, rating, rule)) {
+            let entity_key = cb_entity_key(entity, &review.entity_id);
+            let state = cb_state_value(rating, rule);
+            if settled.get(&entity_key).map(String::as_str) == Some(state.as_str()) {
                 continue;
             }
             examined += 1;
@@ -892,9 +894,10 @@ fn apply_cb_state(
     mbid: &str,
     rating: i64,
     rule: CbRule,
-    settled: &mut HashSet<String>,
+    settled: &mut HashMap<String, String>,
 ) -> Option<i64> {
-    let state = cb_state_key(entity, mbid, rating, rule);
+    let entity_key = cb_entity_key(entity, mbid);
+    let state = cb_state_value(rating, rule);
     let items = lookup_local_items(link, entity, mbid);
     if items.is_empty() {
         // Deliberately not settled: a later library scan may add the item.
@@ -933,7 +936,7 @@ fn apply_cb_state(
                 favorite_targets.len()
             );
         }
-        mark_cb_settled(settings, settled, &link.nd_username, &state);
+        mark_cb_settled(settings, settled, &link.nd_username, &entity_key, &state);
         return Some(0);
     }
 
@@ -960,7 +963,7 @@ fn apply_cb_state(
             favorite_targets.len()
         );
     }
-    mark_cb_settled(settings, settled, &link.nd_username, &state);
+    mark_cb_settled(settings, settled, &link.nd_username, &entity_key, &state);
     Some(attempted)
 }
 
@@ -1073,60 +1076,105 @@ fn subsonic_call_ok(uri: &str, action: &str) -> bool {
 }
 
 /// KVStore key prefix for the CritiqueBrainz states already applied for one user. Kept apart
-/// from the ListenBrainz `synced:` set: these keys encode a desired state rather than a
-/// recording that is settled on both sides, so a changed rating produces a new key.
+/// from the ListenBrainz `synced:` set: each entry stores one entity's latest state string as
+/// its value so changing a rating overwrites in place and reverting to a prior score re-applies.
 fn cb_settled_prefix(nd_username: &str) -> String {
     format!("cbsynced:{nd_username}:")
 }
 
-/// Loads a user's applied CritiqueBrainz states once per pass, stripping the key prefix.
-fn load_cb_settled(nd_username: &str) -> HashSet<String> {
+/// Loads a user's applied CritiqueBrainz states once per pass, keyed by `<entity>:<mbid>`.
+/// Legacy keys from 0.2.0 (`<entity>:<mbid>:r...`) are pruned when not in dry-run mode.
+fn load_cb_settled(nd_username: &str, dry_run: bool) -> HashMap<String, String> {
     let prefix = cb_settled_prefix(nd_username);
-    match kvstore::list(&prefix) {
-        Ok(keys) => keys
-            .into_iter()
-            .filter_map(|key| key.strip_prefix(&prefix).map(str::to_string))
-            .collect(),
+    let keys = match kvstore::list(&prefix) {
+        Ok(keys) => keys,
         Err(e) => {
             warn!("CritiqueBrainz sync: could not load settled state: {e}");
-            HashSet::new()
+            return HashMap::new();
+        }
+    };
+
+    let mut current_keys = Vec::new();
+    let mut legacy_keys = Vec::new();
+    for key in keys {
+        let Some(suffix) = key.strip_prefix(&prefix) else {
+            continue;
+        };
+        if suffix.bytes().filter(|&b| b == b':').count() == 1 {
+            current_keys.push(key);
+        } else {
+            legacy_keys.push(key);
         }
     }
+
+    if !dry_run {
+        for key in legacy_keys {
+            if let Err(e) = kvstore::delete(&key) {
+                warn!("CritiqueBrainz sync: could not delete legacy key '{key}': {e}");
+            }
+        }
+    }
+
+    let mut settled = HashMap::new();
+    for chunk in current_keys.chunks(500) {
+        let values = match kvstore::get_many(chunk.to_vec()) {
+            Ok(values) => values,
+            Err(e) => {
+                warn!("CritiqueBrainz sync: could not load settled values: {e}");
+                return settled;
+            }
+        };
+        for (key, raw) in values {
+            let Some(entity_key) = key.strip_prefix(&prefix) else {
+                continue;
+            };
+            if let Ok(state) = String::from_utf8(raw) {
+                settled.insert(entity_key.to_string(), state);
+            }
+        }
+    }
+    settled
 }
 
 /// Records one applied CritiqueBrainz state for a user. Persistence is skipped in dry-run mode.
 fn mark_cb_settled(
     settings: &Settings,
-    settled: &mut HashSet<String>,
+    settled: &mut HashMap<String, String>,
     nd_username: &str,
+    entity_key: &str,
     state: &str,
 ) {
-    settled.insert(state.to_string());
+    settled.insert(entity_key.to_string(), state.to_string());
     if settings.dry_run {
         return;
     }
-    let key = format!("{}{state}", cb_settled_prefix(nd_username));
-    if let Err(e) = kvstore::set(&key, Vec::new()) {
-        warn!("CritiqueBrainz sync: could not persist settled '{state}': {e}");
+    let key = format!("{}{entity_key}", cb_settled_prefix(nd_username));
+    if let Err(e) = kvstore::set(&key, state.as_bytes().to_vec()) {
+        warn!("CritiqueBrainz sync: could not persist settled '{entity_key}': {e}");
     }
 }
 
-/// The applied state of one entity under one rule. It lists only the actions the rule asks
+/// Suffix identifying one CritiqueBrainz entity under `cbsynced:<user>:`.
+fn cb_entity_key(entity: CbEntity, mbid: &str) -> String {
+    format!("{}:{mbid}", entity.cb_name())
+}
+
+/// The applied state value of one entity under one rule. It lists only the actions the rule asks
 /// for, so a changed rating re-applies just that action, and a rule that only favorites is
 /// never re-applied because of a rating change it does not care about.
-fn cb_state_key(entity: CbEntity, mbid: &str, rating: i64, rule: CbRule) -> String {
-    let mut key = format!("{}:{mbid}:", entity.cb_name());
+fn cb_state_value(rating: i64, rule: CbRule) -> String {
+    let mut value = String::new();
     if rule.sync_rating {
-        key.push_str(&format!("r{rating}:"));
+        value.push_str(&format!("r{rating}:"));
     }
     if rule.favorite_at > 0 {
-        key.push_str(if rating >= rule.favorite_at {
+        value.push_str(if rating >= rule.favorite_at {
             "f1"
         } else {
             "f0"
         });
     }
-    key
+    value
 }
 
 /// GETs a JSON endpoint, sending `auth` as the Authorization header when present. The
@@ -1437,33 +1485,30 @@ mod tests {
             favorite_at: 4,
         };
 
-        // A changed rating must produce a new key, or the change would never be re-applied.
+        // A changed rating must produce a new value, or the change would never be re-applied.
         assert_ne!(
-            cb_state_key(CbEntity::ReleaseGroup, "m", 4, rating_only),
-            cb_state_key(CbEntity::ReleaseGroup, "m", 5, rating_only)
+            cb_state_value(4, rating_only),
+            cb_state_value(5, rating_only)
         );
         // The two toggles are encoded independently.
-        assert_eq!(
-            cb_state_key(CbEntity::Artist, "m", 3, favorite_only),
-            "artist:m:f0"
-        );
-        assert_eq!(
-            cb_state_key(CbEntity::Artist, "m", 4, favorite_only),
-            "artist:m:f1"
-        );
-        assert_eq!(
-            cb_state_key(CbEntity::Recording, "m", 4, rating_only),
-            "recording:m:r4:"
-        );
+        assert_eq!(cb_state_value(3, favorite_only), "f0");
+        assert_eq!(cb_state_value(4, favorite_only), "f1");
+        assert_eq!(cb_state_value(4, rating_only), "r4:");
         // Crossing the threshold re-applies the Favorite without a rating change.
+        assert_ne!(cb_state_value(3, both), cb_state_value(4, both));
+        // Entity type and MBID keep different items apart under one key per entity.
         assert_ne!(
-            cb_state_key(CbEntity::Recording, "m", 3, both),
-            cb_state_key(CbEntity::Recording, "m", 4, both)
+            cb_entity_key(CbEntity::Artist, "a"),
+            cb_entity_key(CbEntity::Recording, "a")
         );
-        // Entity type and MBID keep different items apart.
+        // Overwriting in place means reverting 4 -> 5 -> 4 is no longer hidden by an old 4 key.
+        let mut settled = HashMap::new();
+        let key = cb_entity_key(CbEntity::ReleaseGroup, "m");
+        settled.insert(key.clone(), cb_state_value(4, both));
+        settled.insert(key.clone(), cb_state_value(5, both));
         assert_ne!(
-            cb_state_key(CbEntity::Artist, "a", 5, both),
-            cb_state_key(CbEntity::Recording, "a", 5, both)
+            settled.get(&key).map(String::as_str),
+            Some(cb_state_value(4, both).as_str())
         );
     }
 
