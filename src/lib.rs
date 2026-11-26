@@ -463,13 +463,10 @@ fn sync_inbound(
             break;
         }
 
-        let mut candidates = inbound_candidates(&page, settled);
-        let room = (budget - applied) as usize;
-        if candidates.len() > room {
-            candidates.truncate(room);
-        }
-        if !candidates.is_empty() {
-            applied += resolve_and_favorite(settings, link, settled, &candidates);
+        let candidates = inbound_candidates(&page, settled);
+        let room = (budget - applied).max(0) as usize;
+        if !candidates.is_empty() && room > 0 {
+            applied += resolve_and_favorite(settings, link, settled, &candidates, room);
         }
 
         if exhausted {
@@ -519,11 +516,15 @@ fn resolve_and_favorite(
     link: &UserLink,
     settled: &mut HashSet<String>,
     candidates: &[String],
+    limit: usize,
 ) -> i64 {
     let mut to_favorite = Vec::new();
     let mut to_favorite_mbids = Vec::new();
 
     for chunk in candidates.chunks(settings.batch_size) {
+        if to_favorite.len() >= limit {
+            break;
+        }
         let songs: Vec<SongRef> = chunk
             .iter()
             .map(|mbid| SongRef {
@@ -551,7 +552,7 @@ fn resolve_and_favorite(
                             "ListenBrainz sync [dry-run]: would favorite '{}'",
                             track.title
                         );
-                    } else {
+                    } else if to_favorite.len() < limit {
                         to_favorite.push(track.id);
                         to_favorite_mbids.push(mbid.clone());
                     }
