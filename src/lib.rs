@@ -504,7 +504,10 @@ fn sync_inbound(
             break;
         }
 
-        let candidates = inbound_candidates(&page, settled);
+        let (candidates, malformed) = inbound_candidates(&page, settled);
+        for mbid in malformed {
+            warn!("ListenBrainz sync: skipping malformed MBID '{mbid}'");
+        }
         let room = (budget - applied).max(0) as usize;
         if !candidates.is_empty() && room > 0 {
             applied += resolve_and_favorite(settings, link, settled, &candidates, room);
@@ -526,10 +529,15 @@ fn sync_inbound(
     (applied, rate_limited)
 }
 
-/// Selects the loved, not-yet-settled, valid recording MBIDs from a feedback page.
-fn inbound_candidates(page: &FeedbackPage, settled: &HashSet<String>) -> Vec<String> {
+/// Selects the loved, not-yet-settled, valid recording MBIDs from a feedback page, returning any
+/// malformed MBID strings separately so callers can log them without tying this helper to host FFI.
+fn inbound_candidates<'a>(
+    page: &'a FeedbackPage,
+    settled: &HashSet<String>,
+) -> (Vec<String>, Vec<&'a str>) {
     let mut seen = HashSet::new();
     let mut candidates = Vec::new();
+    let mut malformed = Vec::new();
     for entry in &page.feedback {
         if entry.score != 1 {
             continue;
@@ -538,7 +546,7 @@ fn inbound_candidates(page: &FeedbackPage, settled: &HashSet<String>) -> Vec<Str
             continue;
         };
         if !is_valid_mbid(mbid) {
-            warn!("ListenBrainz sync: skipping malformed MBID '{mbid}'");
+            malformed.push(mbid);
             continue;
         }
         let mbid = mbid.to_ascii_lowercase();
@@ -549,7 +557,7 @@ fn inbound_candidates(page: &FeedbackPage, settled: &HashSet<String>) -> Vec<Str
             candidates.push(mbid);
         }
     }
-    candidates
+    (candidates, malformed)
 }
 
 /// Resolves MBIDs to local tracks and marks the unfavorited ones as Favorites in one batched
@@ -1745,5 +1753,107 @@ mod tests {
             Some("2024-05-05T00:00:00Z")
         );
         assert!(result.song.is_empty());
+    }
+
+    #[test]
+    fn inbound_candidates_filters_normalizes_and_deduplicates() {
+        let page: FeedbackPage = serde_json::from_str(
+            r#"{"count":7,"offset":0,"total_count":7,"feedback":[
+                 {"user_id":"ege","created":1700000000,"recording_msid":null,"score":1,
+                  "recording_mbid":"11111111-1111-1111-1111-111111111111"},
+                 {"score":-1,"recording_mbid":"22222222-2222-2222-2222-222222222222"},
+                 {"score":1,"recording_mbid":null},
+                 {"score":1,"recording_mbid":"not-a-uuid"},
+                 {"score":1,"recording_mbid":"AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"},
+                 {"score":1,"recording_mbid":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"},
+                 {"score":1,"recording_mbid":"BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB"}]}"#,
+        )
+        .expect("real ListenBrainz feedback page shape");
+
+        let settled = HashSet::from(["bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb".to_string()]);
+        let (candidates, malformed) = inbound_candidates(&page, &settled);
+        assert_eq!(
+            candidates,
+            vec![
+                "11111111-1111-1111-1111-111111111111",
+                "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            ]
+        );
+        assert_eq!(malformed, vec!["not-a-uuid"]);
+    }
+
+    #[test]
+    fn is_valid_mbid_accepts_uuids_and_rejects_malformed() {
+        assert!(is_valid_mbid("63f689ce-a3bb-4c6c-b468-50a21e9c77a8"));
+        assert!(is_valid_mbid("63F689CE-A3BB-4C6C-B468-50A21E9C77A8"));
+        assert!(is_valid_mbid("63f689ce-A3BB-4c6c-B468-50a21e9c77A8"));
+
+        assert!(!is_valid_mbid(""));
+        assert!(!is_valid_mbid("63f689ce-a3bb-4c6c-b468-50a21e9c77a"));
+        assert!(!is_valid_mbid("63f689ce-a3bb-4c6c-b468-50a21e9c77a89"));
+        assert!(!is_valid_mbid("63f689cea3bb4c6cb46850a21e9c77a8"));
+        assert!(!is_valid_mbid("63f689cea-3bb-4c6c-b468-50a21e9c77a8"));
+        assert!(!is_valid_mbid("63f689ce-a3bb-4c6c-b468-50a21e9c77ag"));
+        assert!(!is_valid_mbid("63f689ce_a3bb_4c6c_b468_50a21e9c77a8"));
+    }
+
+    #[test]
+    fn percent_encode_preserves_unreserved_and_encodes_reserved_and_utf8() {
+        assert_eq!(percent_encode("AZaz09-_.~"), "AZaz09-_.~");
+        assert_eq!(percent_encode("a b/c?d&e%f"), "a%20b%2Fc%3Fd%26e%25f");
+        assert_eq!(percent_encode("björk"), "bj%C3%B6rk");
+    }
+
+    #[test]
+    fn rate_limit_exhausted_handles_case_whitespace_and_missing() {
+        assert!(!rate_limit_exhausted(&HashMap::new()));
+
+        let lower = HashMap::from([("x-ratelimit-remaining".to_string(), " 0 ".to_string())]);
+        assert!(rate_limit_exhausted(&lower));
+
+        let negative = HashMap::from([("X-RateLimit-Remaining".to_string(), "-1".to_string())]);
+        assert!(rate_limit_exhausted(&negative));
+
+        let remaining = HashMap::from([("X-RateLimit-Remaining".to_string(), "5".to_string())]);
+        assert!(!rate_limit_exhausted(&remaining));
+
+        let invalid = HashMap::from([("X-RateLimit-Remaining".to_string(), "abc".to_string())]);
+        assert!(!rate_limit_exhausted(&invalid));
+    }
+
+    #[test]
+    fn subsonic_envelope_parses_starred2_and_detects_error_status() {
+        let ok_body = r#"{"subsonic-response":{"status":"ok","version":"1.16.1","starred2":{"song":[
+            {"id":"s-1","title":"One","musicBrainzId":"11111111-1111-1111-1111-111111111111"},
+            {"id":"s-2","title":"Untagged"}
+        ]}}}"#;
+        assert!(subsonic_ok(ok_body));
+        let ok_env: SubsonicEnvelope = serde_json::from_str(ok_body).expect("valid starred2");
+        let songs = ok_env.response.starred2.expect("starred2 present").song;
+        assert_eq!(songs.len(), 2);
+        assert_eq!(
+            songs[0].music_brainz_id,
+            "11111111-1111-1111-1111-111111111111"
+        );
+        assert_eq!(songs[1].music_brainz_id, "");
+
+        let failed_body = r#"{"subsonic-response":{"status":"failed","error":{"code":40,"message":"Wrong user"}}}"#;
+        assert!(!subsonic_ok(failed_body));
+        let failed_env: SubsonicEnvelope =
+            serde_json::from_str(failed_body).expect("valid error envelope");
+        assert_eq!(failed_env.response.status, "failed");
+
+        assert!(!subsonic_ok("not json"));
+    }
+
+    #[test]
+    fn classify_stop_distinguishes_transient_and_fatal() {
+        assert!(matches!(classify_stop(429), Stop::RateLimited));
+        assert!(matches!(classify_stop(500), Stop::RateLimited));
+        assert!(matches!(classify_stop(503), Stop::RateLimited));
+
+        assert!(matches!(classify_stop(400), Stop::Fatal(ref msg) if msg == "HTTP 400"));
+        assert!(matches!(classify_stop(401), Stop::Fatal(ref msg) if msg == "HTTP 401"));
+        assert!(matches!(classify_stop(404), Stop::Fatal(ref msg) if msg == "HTTP 404"));
     }
 }
