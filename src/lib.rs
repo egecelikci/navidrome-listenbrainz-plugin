@@ -319,6 +319,7 @@ fn run_sync() {
         settings.dry_run
     );
 
+    let lb_enabled = settings.sync_inbound || settings.sync_outbound;
     let mut lb_stopped = false;
     let mut cb_stopped = false;
     for link in &settings.links {
@@ -330,9 +331,11 @@ fn run_sync() {
             continue;
         }
         // The ListenBrainz username doubles as the CritiqueBrainz identity when no separate
-        // one is configured, so it is resolved first. An invalid token only disables the
-        // ListenBrainz half: CritiqueBrainz needs no token at all.
-        let lb_username = if lb_stopped {
+        // one is configured, so it is resolved only when ListenBrainz sync is enabled or a
+        // CritiqueBrainz pass needs the fallback.
+        let need_lb_username = lb_enabled
+            || (!cb_stopped && !settings.cb_rules.is_empty() && link.cb_username.is_none());
+        let lb_username = if lb_stopped || !need_lb_username {
             None
         } else {
             match resolve_lb_username(&link.token, settings.request_delay_ms) {
@@ -363,7 +366,7 @@ fn run_sync() {
                 }
             }
         };
-        if !lb_stopped {
+        if !lb_stopped && lb_enabled {
             if let Some(lb_username) = lb_username.as_deref() {
                 if sync_user(&settings, link, lb_username) {
                     lb_stopped = true;
@@ -381,7 +384,7 @@ fn run_sync() {
         {
             cb_stopped = true;
         }
-        if lb_stopped && (cb_stopped || settings.cb_rules.is_empty()) {
+        if (lb_stopped || !lb_enabled) && (cb_stopped || settings.cb_rules.is_empty()) {
             break;
         }
     }
