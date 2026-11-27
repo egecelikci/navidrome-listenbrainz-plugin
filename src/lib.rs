@@ -1235,20 +1235,21 @@ fn load_cb_settled(nd_username: &str, dry_run: bool) -> HashMap<String, String> 
     }
 
     let mut settled = HashMap::new();
-    for chunk in current_keys.chunks(500) {
-        let values = match kvstore::get_many(chunk.to_vec()) {
-            Ok(values) => values,
-            Err(e) => {
-                warn!("CritiqueBrainz sync: could not load settled values: {e}");
-                return settled;
-            }
+    // `nd-pdk`'s `KVStoreGetManyResponse` omits `base64_bytes` on `values` and fails on non-empty
+    // base64 payloads, whereas `kvstore::get` handles `base64_bytes` properly.
+    for key in current_keys {
+        let Some(entity_key) = key.strip_prefix(&prefix) else {
+            continue;
         };
-        for (key, raw) in values {
-            let Some(entity_key) = key.strip_prefix(&prefix) else {
-                continue;
-            };
-            if let Ok(state) = String::from_utf8(raw) {
-                settled.insert(entity_key.to_ascii_lowercase(), state);
+        match kvstore::get(&key) {
+            Ok(Some(raw)) => {
+                if let Ok(state) = String::from_utf8(raw) {
+                    settled.insert(entity_key.to_ascii_lowercase(), state);
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                warn!("CritiqueBrainz sync: could not load settled value for '{entity_key}': {e}");
             }
         }
     }
